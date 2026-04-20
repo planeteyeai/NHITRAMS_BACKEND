@@ -3,8 +3,10 @@ from rest_framework.response import Response
 from rest_framework import status
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from .models import Inventory
-from .serializers import InventoryFilterSerializer, InventoryResponseSerializer
+from .models import Inventory, ProjectInfo, RoadSegment, Traffic
+from .serializers import InventoryFilterSerializer, InventoryResponseSerializer, PisReportRequestSerializer, PisReportResponseSerializer, TrafficFilterRequestSerializer
+from django.db import connection
+from datetime import datetime
 
 ASSET_TYPE_MAPPING = {
     'Trees': 'trees',
@@ -119,3 +121,289 @@ class InventoryFilterView(APIView):
             results.append(response_data)
 
         return Response(results, status=status.HTTP_200_OK)
+
+class HealthCheckView(APIView):
+    @swagger_auto_schema(
+        operation_description="Health check endpoint for monitoring API status",
+        responses={200: openapi.Response('Success'), 500: 'Internal Server Error'},
+        tags=["Health"]
+    )
+    def get(self, request):
+        try:
+            timestamp = datetime.utcnow().isoformat() + "Z"
+            return Response({
+                "status": "ok",
+                "message": "API is running successfully",
+                "timestamp": timestamp
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                "status": "error",
+                "message": f"Health check failed: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class ReadinessCheckView(APIView):
+    @swagger_auto_schema(
+        operation_description="Readiness check endpoint that verifies database connection",
+        responses={200: openapi.Response('Ready'), 503: 'Service Unavailable'},
+        tags=["Health"]
+    )
+    def get(self, request):
+        try:
+            timestamp = datetime.utcnow().isoformat() + "Z"
+            # Check database connection
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            db_status = "ready"
+            overall_status = "ready"
+            message = "All systems ready"
+            http_status = status.HTTP_200_OK
+        except Exception as e:
+            db_status = "not ready"
+            overall_status = "not ready"
+            message = f"Database not ready: {str(e)}"
+            http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+        
+        return Response({
+            "status": overall_status,
+            "message": message,
+            "timestamp": timestamp,
+            "database": db_status
+        }, status=http_status)
+
+class PisReportView(APIView):
+    @swagger_auto_schema(
+        operation_description="Fetch PIS report data filtered by criteria",
+        request_body=PisReportRequestSerializer,
+        responses={200: PisReportResponseSerializer(many=True), 400: 'Bad Request', 500: 'Internal Server Error'},
+        tags=["PIS"]
+    )
+    def post(self, request):
+        serializer = PisReportRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        print(f"Request data: {data}")
+
+        page = data.get('page', 1)
+        page_size = data.get('page_size', 100)
+
+        queryset = RoadSegment.objects.select_related('project').filter(
+            chainage_start__gte=data['chainage_start'],
+            chainage_end__lte=data['chainage_end'],
+            project__project_name__in=data['project_name']
+        )
+
+        if 'all' not in data['direction']:
+            queryset = queryset.filter(direction__in=data['direction'])
+
+        print(f"Generated SQL: {queryset.query}")
+
+        # Fetch segments
+        segments = list(queryset.order_by('chainage_start', 'chainage_end'))
+
+        # Apply pagination
+        start = (page - 1) * page_size
+        end = start + page_size
+        segments = segments[start:end]
+
+        print(f"Number of segments after pagination: {len(segments)}")
+
+        records = []
+        for segment in segments:
+            # Attach project_info loosely by project_id
+            project_info = ProjectInfo.objects.filter(project=segment.project).first()
+
+            record = {
+                'project_name': segment.project.project_name,
+                'state': segment.project.state,
+                'district': segment.project.district,
+                'block_taluka': segment.project.block_taluka,
+                'road_code': segment.project.road_code,
+                'originating': segment.project.originating,
+                'terminating': segment.project.terminating,
+                'chainage_start': segment.chainage_start,
+                'chainage_end': segment.chainage_end,
+                'direction': segment.direction,
+                'lane': segment.lane,
+                'carriage_type': segment.carriage_type,
+                'latitude': project_info.latitude if project_info else None,
+                'longitude': project_info.longitude if project_info else None,
+                'kilometer': project_info.kilometer if project_info else None,
+                'overall_progress': project_info.overall_progress if project_info else None,
+                'toll_plaza_location': project_info.toll_plaza_location if project_info else None,
+                'previous_date': None,
+                'next_date': None,
+                'mjb': project_info.mjb if project_info else 0,
+                'mnb': project_info.mnb if project_info else 0,
+                'flyover': project_info.flyover if project_info else 0,
+                'aadt': project_info.aadt if project_info else 0,
+                'pup': project_info.pup if project_info else 0,
+                'vup': project_info.vup if project_info else 0,
+                'rob': project_info.rob if project_info else 0,
+                'structures': 0,
+                'date': project_info.date if project_info else None,
+                'length': project_info.length if project_info else None,
+                'carriage_width': project_info.carriage_width if project_info else None,
+            }
+
+            # Fix date format
+            from datetime import datetime, date
+
+            def format_date(value):
+                if not value:
+                    return None
+
+                # If already a date object
+                if isinstance(value, date):
+                    return value.strftime("%Y-%m-%d")
+
+                # If string
+                if isinstance(value, str):
+                    try:
+                        return datetime.strptime(value, "%d-%m-%Y").strftime("%Y-%m-%d")
+                    except:
+                        return value
+
+                return None
+
+            if project_info:
+                record['previous_date'] = format_date(project_info.previous_date)
+                record['next_date'] = format_date(project_info.next_date)
+
+            # Derive structures as sum of structure counts
+            record['structures'] = (
+                (record.get('mjb') or 0) +
+                (record.get('mnb') or 0) +
+                (record.get('flyover') or 0) +
+                (record.get('rob') or 0) +
+                (record.get('pup') or 0) +
+                (record.get('vup') or 0)
+            )
+
+            records.append(record)
+
+        # Group by (chainage_start, chainage_end)
+        from itertools import groupby
+        from operator import itemgetter
+
+        grouped = {}
+        for key, group in groupby(records, key=itemgetter('chainage_start', 'chainage_end')):
+            grouped[key] = list(group)
+
+        # Convert to list of lists
+        response_data = [grouped[key] for key in sorted(grouped.keys())]
+
+        print(f"Response groups: {len(response_data)}")
+
+        return Response({
+            "page": page,
+            "page_size": page_size,
+            "data": response_data
+        }, status=status.HTTP_200_OK)
+
+class TrafficFilterView(APIView):
+    @swagger_auto_schema(
+        operation_description="Filter traffic data based on criteria",
+        request_body=TrafficFilterRequestSerializer,
+        responses={200: 'Success', 400: 'Bad Request', 500: 'Internal Server Error'},
+        tags=["Traffic"]
+    )
+    def post(self, request):
+        serializer = TrafficFilterRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+
+        queryset = Traffic.objects.select_related("project", "segment")
+
+        if data['chainage_start'] is not None and data['chainage_end'] is not None:
+            queryset = queryset.filter(
+                segment__chainage_start__gte=data['chainage_start'],
+                segment__chainage_end__lte=data['chainage_end']
+            )
+
+        if data['date']:
+            queryset = queryset.filter(survey_date=data['date'])
+
+        if data['project_name']:
+            queryset = queryset.filter(project__project_name__in=data['project_name'])
+
+        if "all" not in data['direction']:
+            queryset = queryset.filter(segment__direction__in=data['direction'])
+
+        queryset = queryset[:500]
+
+        records = list(queryset.values(
+            "project__road_code",
+            "project__project_name",
+            "project__district",
+            "project__block_taluka",
+            "project__length_km",
+
+            "segment__chainage_start",
+            "segment__chainage_end",
+            "segment__direction",
+
+            "three_wheeler_auto",
+            "car_jeep_van_taxi",
+            "standard_bus",
+            "lcv",
+            "two_axle_trucks",
+            "three_axle_trucks",
+            "mav",
+            "osv",
+            "tractor",
+            "others",
+
+            "aadt_vehicles",
+            "aadt_pcu",
+            "cvd_vehicles",
+
+            "latitude",
+            "longitude",
+            "toll_plaza",
+            "survey_date"
+        ))
+
+        # Map to Excel-style keys
+        response_data = []
+        for r in records:
+            response_data.append({
+                "Date": r["survey_date"],
+
+                "Road Code": r["project__road_code"],
+                "Project Name": r["project__project_name"],
+                "District": r["project__district"],
+                "Block": r["project__block_taluka"],
+
+                "Direction": r["segment__direction"],
+                "Length": r["project__length_km"],
+
+                "Chainage From": r["segment__chainage_start"],
+                "Chainage To": r["segment__chainage_end"],
+
+                "3-Wheeler/ Auto": r["three_wheeler_auto"],
+                "Car/ Jeep/ Van/ Taxi": r["car_jeep_van_taxi"],
+                "Standard Bus": r["standard_bus"],
+                "LCV": r["lcv"],
+                "2-Axle Trucks": r["two_axle_trucks"],
+                "3-Axle Trucks": r["three_axle_trucks"],
+                "MAV": r["mav"],
+                "OSV": r["osv"],
+                "Tractor": r["tractor"],
+                "Others": r["others"],
+
+                "AADT in Vehicles": r["aadt_vehicles"],
+                "AADT in PCU": r["aadt_pcu"],
+                "CVD in Vehicles": r["cvd_vehicles"],
+
+                "Longitude": r["longitude"],
+                "Latitude": r["latitude"],
+                "Toll Plaza": r["toll_plaza"],
+            })
+
+        return Response(response_data, status=status.HTTP_200_OK)
