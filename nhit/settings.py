@@ -45,6 +45,8 @@ INSTALLED_APPS = [
     'drf_yasg',
     'distress',
     'inventory',
+    'pis',
+    'traffic',
 ]
 
 MIDDLEWARE = [

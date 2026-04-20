@@ -1,53 +1,5 @@
 from rest_framework import serializers
 
-class PisReportRequestSerializer(serializers.Serializer):
-    chainage_start = serializers.FloatField()
-    chainage_end = serializers.FloatField()
-    date = serializers.CharField()
-    direction = serializers.ListField(child=serializers.CharField())
-    project_name = serializers.ListField(child=serializers.CharField())
-    page = serializers.IntegerField(default=1, min_value=1)
-    page_size = serializers.IntegerField(default=100, min_value=1, max_value=1000)
-
-class TrafficFilterRequestSerializer(serializers.Serializer):
-    chainage_start = serializers.FloatField()
-    chainage_end = serializers.FloatField()
-    date = serializers.DateField(format='%Y-%m-%d', input_formats=['%Y-%m-%d'])
-    direction = serializers.ListField(child=serializers.CharField())
-    project_name = serializers.ListField(child=serializers.CharField())
-
-class PisReportResponseSerializer(serializers.Serializer):
-    project_name = serializers.CharField()
-    state = serializers.CharField()
-    district = serializers.CharField()
-    block_taluka = serializers.CharField()
-    road_code = serializers.CharField()
-    chainage_start = serializers.FloatField()
-    chainage_end = serializers.FloatField()
-    overall_progress = serializers.CharField()
-    longitude = serializers.FloatField()
-    latitude = serializers.FloatField()
-    kilometer = serializers.FloatField()
-    date = serializers.DateField()
-    length = serializers.FloatField()
-    toll_plaza_location = serializers.CharField()
-    previous_date = serializers.DateField(allow_null=True)
-    next_date = serializers.DateField(allow_null=True)
-    originating = serializers.CharField()
-    terminating = serializers.CharField()
-    carriage_width = serializers.FloatField()
-    mjb = serializers.IntegerField()
-    mnb = serializers.IntegerField()
-    flyover = serializers.IntegerField()
-    aadt = serializers.IntegerField()
-    pup = serializers.IntegerField()
-    vup = serializers.IntegerField()
-    rob = serializers.IntegerField()
-    structures = serializers.IntegerField()
-    direction = serializers.CharField()
-    lane = serializers.CharField()
-    carriage_type = serializers.CharField()
-
 class InventoryFilterSerializer(serializers.Serializer):
     chainage_start = serializers.FloatField()
     chainage_end = serializers.FloatField()
