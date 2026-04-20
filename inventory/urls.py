@@ -1,6 +1,6 @@
 from django.urls import path
-from .views import Inventory2FilterView
+from .views import InventoryFilterView
 
 urlpatterns = [
-    path('inventory2_filter/', Inventory2FilterView.as_view(), name='inventory2-filter'),
+    path('inventory_filter/', InventoryFilterView.as_view(), name='inventory-filter'),
 ]

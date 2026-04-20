@@ -1,30 +1,57 @@
 from rest_framework import serializers
 
 class InventoryFilterSerializer(serializers.Serializer):
-    chainage_start = serializers.FloatField(required=False, min_value=0)
-    chainage_end = serializers.FloatField(required=False, min_value=0)
-    date = serializers.DateField(required=False, format='%Y-%m-%d', input_formats=['%Y-%m-%d'])
+    chainage_start = serializers.FloatField()
+    chainage_end = serializers.FloatField()
+    date = serializers.DateField(format='%Y-%m-%d', input_formats=['%Y-%m-%d'])
     direction = serializers.ListField(
-        child=serializers.CharField(max_length=100),
-        required=False
+        child=serializers.CharField(max_length=100)
     )
     project_name = serializers.ListField(
-        child=serializers.CharField(max_length=100),
-        required=False
+        child=serializers.CharField(max_length=100)
     )
     asset_type = serializers.ListField(
-        child=serializers.CharField(max_length=100),
-        required=True  # As per requirements
+        child=serializers.CharField(max_length=100)
     )
 
     def validate(self, data):
-        if 'chainage_start' in data and 'chainage_end' in data:
-            if data['chainage_start'] > data['chainage_end']:
-                raise serializers.ValidationError("chainage_start must be less than or equal to chainage_end")
-        if not data.get('asset_type'):
-            raise serializers.ValidationError("asset_type is required")
+        if data['chainage_start'] > data['chainage_end']:
+            raise serializers.ValidationError("chainage_start must be less than or equal to chainage_end")
         return data
 
 class InventoryResponseSerializer(serializers.Serializer):
-    # Dynamic fields will be added in the view
-    pass
+    project_name = serializers.CharField()
+    chainage_start = serializers.FloatField()
+    chainage_end = serializers.FloatField()
+    direction = serializers.CharField()
+    asset_type = serializers.CharField()
+    trees = serializers.FloatField()
+    culvert = serializers.FloatField()
+    street_lights = serializers.FloatField()
+    bridges = serializers.FloatField()
+    traffic_signals = serializers.FloatField()
+    bus_stop = serializers.FloatField()
+    truck_layby = serializers.FloatField()
+    toll_plaza = serializers.FloatField()
+    adjacent_road = serializers.FloatField()
+    toilet_blocks = serializers.FloatField()
+    rest_area = serializers.FloatField()
+    rcc_drain = serializers.FloatField()
+    fuel_station = serializers.FloatField()
+    emergency_call_box = serializers.FloatField()
+    tunnels = serializers.FloatField()
+    footpath = serializers.FloatField()
+    junction = serializers.FloatField()
+    sign_boards = serializers.FloatField()
+    solar_blinker = serializers.FloatField()
+    median_plants = serializers.FloatField()
+    service_road = serializers.FloatField()
+    km_stones = serializers.FloatField()
+    crash_barrier = serializers.FloatField()
+    median_opening = serializers.CharField()
+    latitude = serializers.FloatField()
+    longitude = serializers.FloatField()
+    date = serializers.DateField()
+    sub_asset_type = serializers.CharField(allow_null=True)
+    carriage_type = serializers.CharField()
+    lane = serializers.CharField()
