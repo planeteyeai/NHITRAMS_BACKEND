@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'inventory',
     'pis',
     'traffic',
+    'pavement',
 ]
 
 MIDDLEWARE = [
