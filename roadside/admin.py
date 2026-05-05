@@ -215,3 +215,10 @@ class RoadsideFeaturesAdmin(admin.ModelAdmin):
             obj.latitude or 0, obj.longitude or 0
         )
     coordinates.short_description = 'Location'
+
+
+# Unregister ProjectInfo to hide it from admin for roadside app
+try:
+    admin.site.unregister(ProjectInfo)
+except admin.sites.NotRegistered:
+    pass
