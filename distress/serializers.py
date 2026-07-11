@@ -1,5 +1,94 @@
 from rest_framework import serializers
 
+from .models import DistressReport
+
+
+class DistressReportWriteSerializer(serializers.ModelSerializer):
+    """Accepts the exact PascalCase payload used by the legacy Excel API.
+
+    Username is intentionally excluded — it is set from the JWT in the view.
+    """
+
+    class Meta:
+        model = DistressReport
+        fields = [
+            'Latitude',
+            'Longitude',
+            'Chainage_Start',
+            'Chainage_End',
+            'Project_Name',
+            'Distress_Type',
+            'Direction',
+            'Date',
+            'Length',
+            'Carriage_Type',
+            'Width',
+            'Depth',
+            'Lane',
+            'No_of_Distress',
+            'Image_URL',
+        ]
+        extra_kwargs = {
+            'Latitude': {'required': True},
+            'Longitude': {'required': True},
+            'Chainage_Start': {'required': True},
+            'Chainage_End': {'required': True},
+            'Project_Name': {'required': True, 'allow_blank': False},
+            'Distress_Type': {'required': True, 'allow_blank': False},
+            'Direction': {'required': True, 'allow_blank': False},
+            'Date': {'required': True, 'allow_blank': False},
+            'Length': {'required': False},
+            'Carriage_Type': {'required': False, 'allow_blank': True},
+            'Width': {'required': False},
+            'Depth': {'required': False},
+            'Lane': {'required': False, 'allow_blank': True},
+            'No_of_Distress': {'required': False},
+            'Image_URL': {'required': False, 'allow_blank': True},
+        }
+
+    def validate(self, data):
+        chainage_start = data.get('Chainage_Start')
+        chainage_end = data.get('Chainage_End')
+        if (
+            chainage_start is not None
+            and chainage_end is not None
+            and chainage_start > chainage_end
+        ):
+            raise serializers.ValidationError(
+                {'Chainage_End': 'Chainage_End must be greater than or equal to Chainage_Start.'}
+            )
+        return data
+
+
+class DistressReportReadSerializer(serializers.ModelSerializer):
+    """Full report representation preserving PascalCase field names."""
+
+    class Meta:
+        model = DistressReport
+        fields = [
+            'id',
+            'username',
+            'Latitude',
+            'Longitude',
+            'Chainage_Start',
+            'Chainage_End',
+            'Project_Name',
+            'Distress_Type',
+            'Direction',
+            'Date',
+            'Length',
+            'Carriage_Type',
+            'Width',
+            'Depth',
+            'Lane',
+            'No_of_Distress',
+            'Image_URL',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+
 class DistressFilterSerializer(serializers.Serializer):
     chainage_start = serializers.FloatField(required=False, min_value=0)
     chainage_end = serializers.FloatField(required=False, min_value=0)

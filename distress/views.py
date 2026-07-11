@@ -2,11 +2,20 @@ import logging
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.exceptions import NotFound, PermissionDenied
 from django.db.models import Sum, Avg, Q, Min, Max
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from .models import Distress, Project, DistressType
-from .serializers import DistressFilterSerializer, DistressReportSerializer, ChainageSummarySerializer
+from .models import Distress, Project, DistressType, DistressReport
+from .serializers import (
+    DistressFilterSerializer,
+    DistressReportSerializer,
+    ChainageSummarySerializer,
+    DistressReportWriteSerializer,
+    DistressReportReadSerializer,
+)
+from .authentication import JWTAuthentication
+from .permissions import IsJWTAuthenticated
 from inventory.models import Inventory
 from collections import defaultdict
 from rest_framework.decorators import api_view
@@ -492,4 +501,131 @@ class ChainageSummaryView(APIView):
         })
 
 
+# ─────────────────────────────────────────────
+# Distress reports (PostgreSQL replacement for Excel storage)
+# ─────────────────────────────────────────────
+
+
+def _jwt_username(request) -> str:
+    """Extract username exclusively from the authenticated JWT principal."""
+    return request.user.username
+
+
+def _get_owned_distress_report(request, report_id: int) -> DistressReport:
+    """Fetch a distress report and enforce ownership (404 / 403)."""
+    try:
+        report = DistressReport.objects.get(pk=report_id)
+    except DistressReport.DoesNotExist:
+        raise NotFound('Report not found.')
+
+    if report.username != _jwt_username(request):
+        raise PermissionDenied('You do not have permission to access this report.')
+
+    return report
+
+
+class AppendDistressReportedExcelView(APIView):
+    """POST /append_distressReported_excel/
+
+    Backward-compatible replacement for the legacy Excel append API.
+    Same URL, same request body field names — stores in PostgreSQL instead.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Append a distress report. Replaces Excel storage with PostgreSQL. '
+            'Request body field names are unchanged for frontend compatibility. '
+            'Username is taken from the JWT.'
+        ),
+        request_body=DistressReportWriteSerializer,
+        responses={
+            200: openapi.Response(
+                description='Success (legacy-compatible)',
+                examples={
+                    'application/json': {
+                        'message': 'Data appended successfully',
+                    }
+                },
+            ),
+            400: 'Validation error',
+            401: 'Unauthorized — missing or invalid JWT',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def post(self, request):
+        serializer = DistressReportWriteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer.save(username=_jwt_username(request))
+
+        # Legacy Excel API returned a simple success message with HTTP 200.
+        return Response(
+            {'message': 'Data appended successfully'},
+            status=status.HTTP_200_OK,
+        )
+
+
+class DistressReportHistoryView(APIView):
+    """GET /distress/history/ — reports for the JWT username only."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description='Return distress reports belonging to the authenticated user, newest first.',
+        responses={
+            200: DistressReportReadSerializer(many=True),
+            401: 'Unauthorized',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def get(self, request):
+        reports = DistressReport.objects.filter(
+            username=_jwt_username(request)
+        ).order_by('-created_at')
+        return Response(DistressReportReadSerializer(reports, many=True).data)
+
+
+class DistressReportDetailView(APIView):
+    """GET / DELETE /distress/{id}/ — retrieve or delete an owned report."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description='Retrieve a single distress report. Returns 403 if owned by another user.',
+        responses={
+            200: DistressReportReadSerializer,
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def get(self, request, report_id):
+        report = _get_owned_distress_report(request, report_id)
+        return Response(DistressReportReadSerializer(report).data)
+
+    @swagger_auto_schema(
+        operation_description='Delete a distress report. Returns 403 if owned by another user.',
+        responses={
+            204: 'Deleted',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def delete(self, request, report_id):
+        report = _get_owned_distress_report(request, report_id)
+        report.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 

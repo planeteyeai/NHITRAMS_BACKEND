@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.db.models import Sum, Count, Avg
 from django.contrib.admin import SimpleListFilter
-from .models import Distress, DistressType, RoadSegment
+from .models import Distress, DistressType, RoadSegment, DistressReport
 
 
 # ─────────────────────────────────────────────
@@ -186,3 +186,21 @@ class DistressAdmin(admin.ModelAdmin):
 admin.site.site_header = "NHIT RAMS Administration"
 admin.site.site_title = "NHIT RAMS"
 admin.site.index_title = "Road Asset Management System"
+
+
+@admin.register(DistressReport)
+class DistressReportAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'username',
+        'Project_Name',
+        'Distress_Type',
+        'Direction',
+        'Date',
+        'No_of_Distress',
+        'created_at',
+    )
+    list_filter = ('Distress_Type', 'Direction', 'Project_Name')
+    search_fields = ('username', 'Project_Name', 'Distress_Type', 'Image_URL')
+    readonly_fields = ('created_at', 'updated_at')
+    ordering = ('-created_at',)

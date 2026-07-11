@@ -57,3 +57,41 @@ class Distress(models.Model):
 
     def __str__(self):
         return f"Distress {self.distress_id} - {self.distress_type.distress_type_name}"
+
+
+class DistressReport(models.Model):
+    """User-submitted distress report formerly stored in Excel.
+
+    Field names intentionally match the legacy frontend JSON contract
+    (PascalCase). Username is always set from the JWT, never the body.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    username = models.CharField(max_length=150, db_index=True)
+    Latitude = models.FloatField()
+    Longitude = models.FloatField()
+    Chainage_Start = models.FloatField()
+    Chainage_End = models.FloatField()
+    Project_Name = models.CharField(max_length=255)
+    Distress_Type = models.CharField(max_length=255)
+    Direction = models.CharField(max_length=100)
+    Date = models.CharField(max_length=50)
+    Length = models.FloatField(default=0)
+    Carriage_Type = models.CharField(max_length=100, blank=True, default='')
+    Width = models.FloatField(default=0)
+    Depth = models.FloatField(default=0)
+    Lane = models.CharField(max_length=100, blank=True, default='')
+    No_of_Distress = models.IntegerField(default=1)
+    Image_URL = models.CharField(max_length=1024, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'distress_reports'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['username', '-created_at'], name='distress_rpt_user_created_idx'),
+        ]
+
+    def __str__(self):
+        return f'DistressReport {self.id} ({self.username}) — {self.Distress_Type}'
