@@ -75,3 +75,40 @@ class Inventory(models.Model):
         return f"Inventory {self.inventory_id}"
 
 
+class InventoryReport(models.Model):
+    """User-submitted inventory report formerly stored in Excel.
+
+    Field names intentionally match the legacy frontend JSON contract.
+    Username is always set from the JWT, never the body.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    username = models.CharField(max_length=150, db_index=True)
+    Project_Name = models.CharField(max_length=255)
+    Chainage_start = models.FloatField()
+    Chainage_end = models.FloatField()
+    Direction = models.CharField(max_length=100)
+    Asset_type = models.CharField(max_length=255)
+    Latitude = models.FloatField()
+    Longitude = models.FloatField()
+    Date = models.CharField(max_length=50)
+    Sub_Asset_Type = models.CharField(max_length=255, blank=True, default='')
+    Carriage_Type = models.CharField(max_length=100, blank=True, default='')
+    Lane = models.CharField(max_length=100, blank=True, default='')
+    No_of_inventories = models.IntegerField(default=0)
+    Image_URL = models.CharField(max_length=1024, blank=True, default='')
+    Video_URL = models.CharField(max_length=1024, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'inventory_reports'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['username', '-created_at'], name='inv_rpt_user_created_idx'),
+        ]
+
+    def __str__(self):
+        return f'InventoryReport {self.id} ({self.username}) — {self.Asset_type}'
+
+

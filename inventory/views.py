@@ -1,10 +1,18 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.exceptions import NotFound, PermissionDenied
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from .models import Inventory, RoadSegment
-from .serializers import InventoryFilterSerializer, InventoryResponseSerializer
+from .models import Inventory, RoadSegment, InventoryReport
+from .serializers import (
+    InventoryFilterSerializer,
+    InventoryResponseSerializer,
+    InventoryReportWriteSerializer,
+    InventoryReportReadSerializer,
+)
+from .authentication import JWTAuthentication
+from .permissions import IsJWTAuthenticated
 from django.db import connection
 from datetime import datetime
 
@@ -171,3 +179,131 @@ class ReadinessCheckView(APIView):
             "timestamp": timestamp,
             "database": db_status
         }, status=http_status)
+
+
+# ─────────────────────────────────────────────
+# Inventory reports (PostgreSQL replacement for Excel storage)
+# ─────────────────────────────────────────────
+
+
+def _jwt_username(request) -> str:
+    """Extract username exclusively from the authenticated JWT principal."""
+    return request.user.username
+
+
+def _get_owned_inventory_report(request, report_id: int) -> InventoryReport:
+    """Fetch an inventory report and enforce ownership (404 / 403)."""
+    try:
+        report = InventoryReport.objects.get(pk=report_id)
+    except InventoryReport.DoesNotExist:
+        raise NotFound('Report not found.')
+
+    if report.username != _jwt_username(request):
+        raise PermissionDenied('You do not have permission to access this report.')
+
+    return report
+
+
+class AppendInventoryExcelView(APIView):
+    """POST /append_inventory_excel/
+
+    Backward-compatible replacement for the legacy Excel append API.
+    Same URL, same request body field names — stores in PostgreSQL instead.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Append an inventory report. Replaces Excel storage with PostgreSQL. '
+            'Request body field names are unchanged for frontend compatibility. '
+            'Username is taken from the JWT. Includes Video_URL.'
+        ),
+        request_body=InventoryReportWriteSerializer,
+        responses={
+            200: openapi.Response(
+                description='Success (legacy-compatible)',
+                examples={
+                    'application/json': {
+                        'message': 'Data appended successfully',
+                    }
+                },
+            ),
+            400: 'Validation error',
+            401: 'Unauthorized — missing or invalid JWT',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def post(self, request):
+        serializer = InventoryReportWriteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer.save(username=_jwt_username(request))
+
+        return Response(
+            {'message': 'Data appended successfully'},
+            status=status.HTTP_200_OK,
+        )
+
+
+class InventoryReportHistoryView(APIView):
+    """GET /inventory/history/ — reports for the JWT username only."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description='Return inventory reports belonging to the authenticated user, newest first.',
+        responses={
+            200: InventoryReportReadSerializer(many=True),
+            401: 'Unauthorized',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def get(self, request):
+        reports = InventoryReport.objects.filter(
+            username=_jwt_username(request)
+        ).order_by('-created_at')
+        return Response(InventoryReportReadSerializer(reports, many=True).data)
+
+
+class InventoryReportDetailView(APIView):
+    """GET / DELETE /inventory/{id}/ — retrieve or delete an owned report."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description='Retrieve a single inventory report. Returns 403 if owned by another user.',
+        responses={
+            200: InventoryReportReadSerializer,
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def get(self, request, report_id):
+        report = _get_owned_inventory_report(request, report_id)
+        return Response(InventoryReportReadSerializer(report).data)
+
+    @swagger_auto_schema(
+        operation_description='Delete an inventory report. Returns 403 if owned by another user.',
+        responses={
+            204: 'Deleted',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def delete(self, request, report_id):
+        report = _get_owned_inventory_report(request, report_id)
+        report.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

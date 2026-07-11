@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.db.models import Sum, Count
 from django.contrib.admin import SimpleListFilter
-from .models import Inventory, AssetType, SubAssetType, Project, RoadSegment
+from .models import Inventory, AssetType, SubAssetType, Project, RoadSegment, InventoryReport
 
 
 # ─────────────────────────────────────────────
@@ -253,3 +253,21 @@ class InventoryAdmin(admin.ModelAdmin):
             obj.latitude or 0, obj.longitude or 0
         )
     coordinates.short_description = 'Location'
+
+
+@admin.register(InventoryReport)
+class InventoryReportAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'username',
+        'Project_Name',
+        'Asset_type',
+        'Direction',
+        'Date',
+        'No_of_inventories',
+        'created_at',
+    )
+    list_filter = ('Asset_type', 'Direction', 'Project_Name')
+    search_fields = ('username', 'Project_Name', 'Asset_type', 'Image_URL', 'Video_URL')
+    readonly_fields = ('created_at', 'updated_at')
+    ordering = ('-created_at',)
