@@ -63,6 +63,7 @@ COPY --chown=appuser:appuser authentication ./authentication
 COPY --chown=appuser:appuser reports ./reports
 COPY --chown=appuser:appuser distress ./distress
 COPY --chown=appuser:appuser inventory ./inventory
+COPY --chown=appuser:appuser pdf ./pdf
 COPY --chown=appuser:appuser pis ./pis
 COPY --chown=appuser:appuser traffic ./traffic
 COPY --chown=appuser:appuser pavement ./pavement

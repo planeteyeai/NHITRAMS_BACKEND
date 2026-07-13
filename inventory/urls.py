@@ -6,6 +6,7 @@ from .views import (
     AppendInventoryExcelView,
     InventoryReportHistoryView,
     InventoryReportDetailView,
+    InventoryPDFExportView,
 )
 
 urlpatterns = [
@@ -20,5 +21,6 @@ urlpatterns = [
         name='append-inventory-excel',
     ),
     path('inventory/history/', InventoryReportHistoryView.as_view(), name='inventory-report-history'),
+    path('inventory/export/pdf/', InventoryPDFExportView.as_view(), name='inventory-export-pdf'),
     path('inventory/<int:report_id>/', InventoryReportDetailView.as_view(), name='inventory-report-detail'),
 ]

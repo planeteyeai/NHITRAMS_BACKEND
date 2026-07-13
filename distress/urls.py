@@ -10,6 +10,7 @@ from .views import (
     AppendDistressReportedExcelView,
     DistressReportHistoryView,
     DistressReportDetailView,
+    DistressPDFExportView,
 )
 
 urlpatterns = [
@@ -27,5 +28,6 @@ urlpatterns = [
         name='append-distress-reported-excel',
     ),
     path('distress/history/', DistressReportHistoryView.as_view(), name='distress-report-history'),
+    path('distress/export/pdf/', DistressPDFExportView.as_view(), name='distress-export-pdf'),
     path('distress/<int:report_id>/', DistressReportDetailView.as_view(), name='distress-report-detail'),
 ]

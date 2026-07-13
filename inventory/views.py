@@ -1,3 +1,4 @@
+import logging
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -15,6 +16,8 @@ from .authentication import JWTAuthentication
 from .permissions import IsJWTAuthenticated
 from django.db import connection
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 ASSET_TYPE_MAPPING = {
     'Trees': 'trees',
@@ -307,3 +310,74 @@ class InventoryReportDetailView(APIView):
         report = _get_owned_inventory_report(request, report_id)
         report.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class InventoryPDFExportView(APIView):
+    """GET /inventory/export/pdf/ — export owned inventory reports as PDF."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Export Road Inventory Collection Report PDF for the authenticated user. '
+            'Supports ?id=20, ?ids=2,3,9, or all owned reports when omitted. '
+            'Includes Video_URL indicator.'
+        ),
+        manual_parameters=[
+            openapi.Parameter('id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
+            openapi.Parameter(
+                'ids',
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description='Comma-separated ids, e.g. 2,3,9',
+            ),
+        ],
+        responses={
+            200: openapi.Response('PDF file'),
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'No matching reports',
+            500: 'PDF generation failure',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def get(self, request):
+        from pdf.builders import InventoryReportBuilder
+        from pdf.utils import (
+            TempWorkspace,
+            filename_for,
+            format_generated_date,
+            get_owned_reports,
+            parse_export_ids,
+            pdf_file_response,
+        )
+
+        try:
+            report_ids = parse_export_ids(request.query_params)
+            records = get_owned_reports(InventoryReport, request.user.username, report_ids)
+            if hasattr(records, 'all'):
+                records = list(records)
+
+            workspace = TempWorkspace()
+            workspace.__enter__()
+            try:
+                download_name = filename_for('inventory', format_generated_date())
+                pdf_path = workspace.make_pdf_path('inventory_')
+                InventoryReportBuilder(records, temp_dir=workspace.dir).build(pdf_path)
+                return pdf_file_response(pdf_path, download_name, cleanup=workspace.cleanup)
+            except Exception:
+                workspace.cleanup()
+                raise
+        except Exception as exc:
+            from rest_framework.exceptions import APIException
+
+            if isinstance(exc, APIException):
+                raise
+            logger.exception('Inventory PDF generation failed')
+            return Response(
+                {'detail': 'PDF generation failure.', 'error': str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )

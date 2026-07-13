@@ -629,3 +629,73 @@ class DistressReportDetailView(APIView):
         report.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+class DistressPDFExportView(APIView):
+    """GET /distress/export/pdf/ — export owned distress reports as PDF."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Export Road Distress Analysis Report PDF for the authenticated user. '
+            'Supports ?id=15, ?ids=5,7,10, or all owned reports when omitted.'
+        ),
+        manual_parameters=[
+            openapi.Parameter('id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
+            openapi.Parameter(
+                'ids',
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description='Comma-separated ids, e.g. 5,7,10',
+            ),
+        ],
+        responses={
+            200: openapi.Response('PDF file'),
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'No matching reports',
+            500: 'PDF generation failure',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def get(self, request):
+        from pdf.builders import DistressReportBuilder
+        from pdf.utils import (
+            TempWorkspace,
+            filename_for,
+            format_generated_date,
+            get_owned_reports,
+            parse_export_ids,
+            pdf_file_response,
+        )
+
+        try:
+            report_ids = parse_export_ids(request.query_params)
+            records = get_owned_reports(DistressReport, request.user.username, report_ids)
+            if hasattr(records, 'all'):
+                records = list(records)
+
+            workspace = TempWorkspace()
+            workspace.__enter__()
+            try:
+                download_name = filename_for('distress', format_generated_date())
+                pdf_path = workspace.make_pdf_path('distress_')
+                DistressReportBuilder(records, temp_dir=workspace.dir).build(pdf_path)
+                return pdf_file_response(pdf_path, download_name, cleanup=workspace.cleanup)
+            except Exception:
+                workspace.cleanup()
+                raise
+        except Exception as exc:
+            from rest_framework.exceptions import APIException
+
+            if isinstance(exc, APIException):
+                raise
+            logger.exception('Distress PDF generation failed')
+            return Response(
+                {'detail': 'PDF generation failure.', 'error': str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
