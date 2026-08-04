@@ -33,10 +33,16 @@ if [ "${COLLECT_STATIC:-true}" = "true" ]; then
 fi
 
 # If CMD is gunicorn without explicit bind/workers, inject defaults.
+# Prefer Railway/PaaS $PORT when set so the proxy can reach the process.
 if [ "$#" -gt 0 ] && [ "$1" = "gunicorn" ]; then
   shift
+  if [ -n "${PORT:-}" ]; then
+    BIND_ADDR="0.0.0.0:${PORT}"
+  else
+    BIND_ADDR="${GUNICORN_BIND:-0.0.0.0:8000}"
+  fi
   set -- gunicorn \
-    --bind "${GUNICORN_BIND:-0.0.0.0:${PORT:-8000}}" \
+    --bind "${BIND_ADDR}" \
     --workers "${GUNICORN_WORKERS:-3}" \
     --timeout "${GUNICORN_TIMEOUT:-120}" \
     --access-logfile - \
