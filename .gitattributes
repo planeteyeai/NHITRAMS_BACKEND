@@ -1,0 +1,4 @@
+# Force shell scripts and Docker entrypoints to LF so Linux containers can exec them.
+*.sh text eol=lf
+docker/entrypoint.sh text eol=lf
+**/entrypoint.sh text eol=lf
