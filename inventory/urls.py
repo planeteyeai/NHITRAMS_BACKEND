@@ -12,6 +12,7 @@ from .views import (
     DPRReportHistoryView,
 )
 from .views_routine_maintenance import (
+    InventoryProjectsListView,
     RoutineMaintenanceMasterView,
     RoutineMaintenanceReportCreateView,
     RoutineMaintenanceReportDetailView,
@@ -48,6 +49,10 @@ urlpatterns = [
     ),
     path('api/inventory/dpr/history', DPRReportHistoryView.as_view(), name='inventory-dpr-history'),
     path('api/inventory/dpr/history/', DPRReportHistoryView.as_view(), name='inventory-dpr-history-slash'),
+
+    # Inventory projects (JWT-protected dropdown source)
+    path('api/inventory/projects', InventoryProjectsListView.as_view(), name='inventory-projects'),
+    path('api/inventory/projects/', InventoryProjectsListView.as_view(), name='inventory-projects-slash'),
 
     # Routine Maintenance (JWT-protected)
     path(

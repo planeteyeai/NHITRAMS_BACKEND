@@ -19,11 +19,11 @@ from .serializers_routine_maintenance import (
     RoutineMaintenanceReportReadSerializer,
     RoutineMaintenanceReportWriteSerializer,
 )
-from .services.project_lookup import ProjectDetailsNotFound
 from .services.routine_maintenance import (
     collect_rm_images,
     create_routine_maintenance_report,
     get_routine_maintenance_master,
+    list_inventory_projects,
     list_routine_maintenance_reports,
     update_routine_maintenance_report,
 )
@@ -35,6 +35,28 @@ def _jwt_username(request) -> str:
     return request.user.username
 
 
+class InventoryProjectsListView(APIView):
+    """GET /api/inventory/projects — project dropdown for RM (and related forms)."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description='Return all projects from the projects table for dropdown selection.',
+        responses={200: openapi.Response('Project list'), 401: 'Unauthorized'},
+        security=[{'Bearer': []}],
+        tags=['Inventory Projects'],
+    )
+    def get(self, request):
+        return Response(
+            {
+                'success': True,
+                'data': list_inventory_projects(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class RoutineMaintenanceMasterView(APIView):
     """GET /api/inventory/routine-maintenance/master"""
 
@@ -42,7 +64,9 @@ class RoutineMaintenanceMasterView(APIView):
     permission_classes = [IsJWTAuthenticated]
 
     @swagger_auto_schema(
-        operation_description='Return active routine-maintenance dropdown masters.',
+        operation_description=(
+            'Return active routine-maintenance dropdown masters, including projects.'
+        ),
         responses={200: openapi.Response('Master data'), 401: 'Unauthorized'},
         security=[{'Bearer': []}],
         tags=['Routine Maintenance'],
@@ -67,13 +91,13 @@ class RoutineMaintenanceReportCreateView(APIView):
     @swagger_auto_schema(
         operation_description=(
             'Create a routine maintenance report. '
-            'Username and project fields are resolved on the server from the JWT.'
+            'Send project_id; project details are resolved from the projects table. '
+            'Username is taken from the JWT.'
         ),
         responses={
             201: openapi.Response('Created'),
             400: 'Validation error',
             401: 'Unauthorized',
-            404: 'No project assignment',
             500: 'Upload/persistence failure',
         },
         security=[{'Bearer': []}],
@@ -94,11 +118,6 @@ class RoutineMaintenanceReportCreateView(APIView):
                 username=username,
                 validated=serializer.validated_data,
                 image_files=image_files,
-            )
-        except ProjectDetailsNotFound as exc:
-            return Response(
-                {'success': False, 'message': str(exc)},
-                status=status.HTTP_404_NOT_FOUND,
             )
         except ValidationError as exc:
             return Response(
@@ -182,7 +201,8 @@ class RoutineMaintenanceReportDetailView(APIView):
     @swagger_auto_schema(
         operation_description=(
             'Partial update of a routine maintenance report (PATCH). '
-            'Send only fields to change. Username and project fields are immutable. '
+            'Send only fields to change. Username is immutable. '
+            'Optional project_id refreshes stored project snapshot. '
             'Images: use `retain_image_urls` / `keep_images`, `remove_images`, '
             '`clear_images`, and upload via `images` / `new_images`.'
         ),

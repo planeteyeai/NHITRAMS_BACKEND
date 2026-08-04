@@ -15,6 +15,7 @@ from .models import (
     SideMaster,
 )
 from .serializers import _extract_retain_image_urls, _parse_url_list
+from .services.routine_maintenance import resolve_project_details
 
 RM_SERVER_OWNED_FIELDS = frozenset({
     'username',
@@ -67,13 +68,13 @@ def _parse_inspection_datetime(raw):
 
 
 class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
-    """Multipart create/update payload. Identity/project fields are rejected."""
+    """Multipart create/update payload. Identity/project name fields are rejected."""
 
-    category_id = serializers.IntegerField()
-    subcategory_id = serializers.IntegerField()
-    side_id = serializers.IntegerField()
-    severity_id = serializers.IntegerField()
-
+    project_id = serializers.IntegerField(required=False)
+    category_id = serializers.IntegerField(required=False)
+    subcategory_id = serializers.IntegerField(required=False)
+    side_id = serializers.IntegerField(required=False)
+    severity_id = serializers.IntegerField(required=False)
     description_of_work = serializers.CharField(required=False, allow_blank=True, default='')
     nos = serializers.FloatField(required=False, default=0)
     length = serializers.FloatField(required=False, default=0)
@@ -81,9 +82,9 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
     depth = serializers.FloatField(required=False, default=0)
     total_quantity = serializers.FloatField(required=False, default=0)
 
-    latitude = serializers.FloatField()
-    longitude = serializers.FloatField()
-    chainage = serializers.CharField(max_length=100)
+    latitude = serializers.FloatField(required=False)
+    longitude = serializers.FloatField(required=False)
+    chainage = serializers.CharField(max_length=100, required=False)
 
     # Multipart often sends datetimes as plain strings — parse in validate().
     inspection_datetime = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -132,6 +133,7 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
             return None
 
         field_sources = {
+            'project_id': ('project_id',),
             'category_id': ('category_id',),
             'subcategory_id': ('subcategory_id',),
             'side_id': ('side_id',),
@@ -176,11 +178,15 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
         return super().to_internal_value(mutable)
 
     def validate_latitude(self, value):
+        if value is None:
+            return value
         if value < -90 or value > 90:
             raise serializers.ValidationError('Latitude must be between -90 and 90.')
         return value
 
     def validate_longitude(self, value):
+        if value is None:
+            return value
         if value < -180 or value > 180:
             raise serializers.ValidationError('Longitude must be between -180 and 180.')
         return value
@@ -249,6 +255,11 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
         return category, subcategory
 
     def validate(self, attrs):
+        if 'project_id' in attrs:
+            attrs['project'] = resolve_project_details(attrs['project_id'])
+        elif not self.partial:
+            raise serializers.ValidationError({'project_id': ['This field is required.']})
+
         category, subcategory = self._resolve_category_pair(attrs)
         if category is not None:
             attrs['category'] = category
@@ -276,6 +287,25 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
         elif not self.partial:
             raise serializers.ValidationError({'severity_id': 'This field is required.'})
 
+        if 'latitude' in attrs:
+            if attrs['latitude'] < -90 or attrs['latitude'] > 90:
+                raise serializers.ValidationError(
+                    {'latitude': 'Latitude must be between -90 and 90.'}
+                )
+        elif not self.partial:
+            raise serializers.ValidationError({'latitude': 'This field is required.'})
+
+        if 'longitude' in attrs:
+            if attrs['longitude'] < -180 or attrs['longitude'] > 180:
+                raise serializers.ValidationError(
+                    {'longitude': 'Longitude must be between -180 and 180.'}
+                )
+        elif not self.partial:
+            raise serializers.ValidationError({'longitude': 'This field is required.'})
+
+        if 'chainage' not in attrs and not self.partial:
+            raise serializers.ValidationError({'chainage': 'This field is required.'})
+
         if 'inspection_datetime' in attrs:
             attrs['inspection_datetime'] = _parse_inspection_datetime(
                 attrs.get('inspection_datetime')
@@ -288,6 +318,7 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
 
 class RoutineMaintenanceReportReadSerializer(serializers.ModelSerializer):
     report_id = serializers.IntegerField(source='id', read_only=True)
+    project = serializers.SerializerMethodField()
     category = serializers.SerializerMethodField()
     subcategory = serializers.SerializerMethodField()
     side = serializers.SerializerMethodField()
@@ -298,10 +329,7 @@ class RoutineMaintenanceReportReadSerializer(serializers.ModelSerializer):
         fields = [
             'report_id',
             'username',
-            'project_name',
-            'start_chainage',
-            'end_chainage',
-            'total_project_length',
+            'project',
             'category',
             'subcategory',
             'side',
@@ -322,6 +350,15 @@ class RoutineMaintenanceReportReadSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = fields
+
+    def get_project(self, obj):
+        return {
+            'id': obj.project_id,
+            'project_name': obj.project_name,
+            'start_chainage': obj.start_chainage,
+            'end_chainage': obj.end_chainage,
+            'total_project_length': obj.total_project_length,
+        }
 
     def get_category(self, obj):
         return {'id': obj.category_id, 'name': obj.category.name}

@@ -358,7 +358,8 @@ class RoutineMaintenanceReport(models.Model):
     id = models.BigAutoField(primary_key=True)
     username = models.CharField(max_length=150, db_index=True)
 
-    # Auto-fetched via get_project_details(username)
+    # Snapshot resolved from Project via project_id (not UserProjectAssignment)
+    project_id = models.IntegerField(null=True, blank=True, db_index=True)
     project_name = models.CharField(max_length=255)
     start_chainage = models.CharField(max_length=100)
     end_chainage = models.CharField(max_length=100)
