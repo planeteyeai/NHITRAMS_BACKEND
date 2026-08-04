@@ -24,6 +24,13 @@ class Project(models.Model):
 
 class RoadSegment(models.Model):
     segment_id = models.AutoField(primary_key=True)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        db_column='project_id',
+        null=True,
+        blank=True,
+    )
     chainage_start = models.FloatField()
     chainage_end = models.FloatField()
     direction = models.CharField(max_length=100)
@@ -45,11 +52,17 @@ class Distress(models.Model):
     distress_date = models.DateField()
     latitude = models.FloatField()
     longitude = models.FloatField()
-    count_val = models.IntegerField()
+    count_val = models.FloatField()
     length_val = models.FloatField()
     area_val = models.FloatField()
     width_val = models.FloatField()
     depth_val = models.FloatField()
+    # Provenance / Google Sheet upsert key (columns exist on production table;
+    # sync_id is added via google_sheet_sync migration if missing).
+    distress_source = models.TextField(null=True, blank=True)
+    source_file = models.TextField(null=True, blank=True)
+    source_sheet = models.TextField(null=True, blank=True)
+    sync_id = models.UUIDField(null=True, blank=True, unique=True)
 
     class Meta:
         managed = False

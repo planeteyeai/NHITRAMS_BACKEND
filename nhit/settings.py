@@ -53,7 +53,13 @@ INSTALLED_APPS = [
     'roadside',
     'authentication',
     'reports',
+    'google_sheet_sync',
 ]
+
+# Local-only Neon test UI (folder is gitignored; skip if missing).
+if (BASE_DIR / 'test' / 'apps.py').is_file():
+    INSTALLED_APPS.append('test.apps.TestVizConfig')
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -87,9 +93,54 @@ TEMPLATES = [
 WSGI_APPLICATION = 'nhit.wsgi.application'
 
 
+# ---------------------------------------------------------------------------
 # Database
+#
+# DJANGO_ENV selects which env-var naming convention is used:
+#
+#   development / local / dev
+#     → DATABASE_NAME, DATABASE_USER, DATABASE_PASSWORD, DATABASE_HOST,
+#       DATABASE_PORT  (local PostgreSQL)
+#     → Optional overrides still accepted: DB_* if set
+#
+#   production (default when DJANGO_ENV is unset)
+#     → DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_SSLMODE
+#     → Same keys Railway / Neon already use — do not rename them
+#
+# Credentials are never hardcoded; they always come from the environment.
+# ---------------------------------------------------------------------------
+DJANGO_ENV = os.environ.get('DJANGO_ENV', 'production').strip().lower()
+_IS_DEVELOPMENT = DJANGO_ENV in {'development', 'local', 'dev'}
+
+
+def _db_setting(*names: str, default: str | None = None) -> str | None:
+    """Return the first non-empty environment value among *names*."""
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip() != '':
+            return value
+    return default
+
+
+if _IS_DEVELOPMENT:
+    # Local: prefer DATABASE_* (see .env); fall back to DB_* if present.
+    _db_name = _db_setting('DATABASE_NAME', 'DB_NAME')
+    _db_user = _db_setting('DATABASE_USER', 'DB_USER')
+    _db_password = _db_setting('DATABASE_PASSWORD', 'DB_PASSWORD')
+    _db_host = _db_setting('DATABASE_HOST', 'DB_HOST', default='localhost')
+    _db_port = _db_setting('DATABASE_PORT', 'DB_PORT', default='5432')
+    _db_sslmode = _db_setting('DB_SSLMODE', default='prefer')
+else:
+    # Production: existing Neon / Railway variables only (unchanged).
+    _db_name = _db_setting('DB_NAME')
+    _db_user = _db_setting('DB_USER')
+    _db_password = _db_setting('DB_PASSWORD')
+    _db_host = _db_setting('DB_HOST')
+    _db_port = _db_setting('DB_PORT', default='5432')
+    _db_sslmode = _db_setting('DB_SSLMODE', default='prefer')
+
 _db_options = {
-    'sslmode': os.environ.get('DB_SSLMODE', 'prefer'),
+    'sslmode': _db_sslmode,
 }
 # Neon pooled connections reject search_path in startup options.
 # Set DB_SEARCH_PATH (e.g. "nhit,public") only for local/unpooled Postgres.
@@ -100,11 +151,11 @@ if _db_search_path:
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DB_NAME'),
-        'USER': os.environ.get('DB_USER'),
-        'PASSWORD': os.environ.get('DB_PASSWORD'),
-        'HOST': os.environ.get('DB_HOST'),
-        'PORT': os.environ.get('DB_PORT', '5432'),
+        'NAME': _db_name,
+        'USER': _db_user,
+        'PASSWORD': _db_password,
+        'HOST': _db_host,
+        'PORT': _db_port,
         'OPTIONS': _db_options,
         'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
     }
@@ -179,6 +230,15 @@ REST_FRAMEWORK = {
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', SECRET_KEY)
 JWT_ACCESS_TOKEN_LIFETIME_SECONDS = int(os.environ.get('JWT_ACCESS_TOKEN_LIFETIME_SECONDS', '86400'))
+
+# AWS S3 (DPR evidence uploads → Damaged Assets/)
+AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', '')
+AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
+AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', 'nhitbucket')
+AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'ap-south-1')
+AWS_S3_DPR_FOLDER = os.environ.get('AWS_S3_DPR_FOLDER', 'Damaged Assets')
+AWS_DEFAULT_ACL = os.environ.get('AWS_DEFAULT_ACL', '') or None
+AWS_S3_MAX_UPLOAD_BYTES = int(os.environ.get('AWS_S3_MAX_UPLOAD_BYTES', str(10 * 1024 * 1024)))
 
 SWAGGER_SETTINGS = {
     'SECURITY_DEFINITIONS': {

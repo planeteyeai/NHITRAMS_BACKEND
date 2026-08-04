@@ -1,0 +1,87 @@
+{
+  "info": {
+    "name": "NHIT Google Sheet Sync",
+    "description": "POST /api/google-sheet-sync/ — upsert one Google Sheets distress row",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    }
+  ],
+  "item": [
+    {
+      "name": "Create row (empty sync_id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sync_id\": \"\",\n  \"status\": \"\",\n  \"latitude\": 19.991,\n  \"longitude\": 73.789,\n  \"chainage_start\": 100,\n  \"chainage_end\": \"\",\n  \"project_name\": \"Agra Bypass Road\",\n  \"distress_type\": \"Crack\",\n  \"direction\": \"\",\n  \"total_distress\": \"\",\n  \"oblique_crack\": \"\",\n  \"pothole\": \"\",\n  \"edge_break\": \"\",\n  \"patching\": \"\",\n  \"bleeding\": \"\",\n  \"hotspots\": \"\",\n  \"alligator_crack\": \"\",\n  \"roughness\": \"\",\n  \"repair\": \"\",\n  \"block_crack\": \"\",\n  \"rutting\": \"\",\n  \"longitudinal_crack\": \"\",\n  \"raveling\": \"\",\n  \"date\": \"2026-07-17\",\n  \"length\": \"\",\n  \"area\": \"\",\n  \"carriage_type\": \"\",\n  \"single_discrete_crack\": \"\",\n  \"multiple_cracks\": \"\",\n  \"joint_crack\": \"\",\n  \"joint_seal_defects\": \"\",\n  \"punchout\": \"\",\n  \"slippage\": \"\",\n  \"heaves\": \"\",\n  \"simple_crack\": \"\",\n  \"transverse_crack\": \"\",\n  \"width\": \"\",\n  \"depth\": \"\",\n  \"lane\": \"\",\n  \"hairline_crack\": \"\",\n  \"hungry_surface\": \"\",\n  \"settlement\": \"\",\n  \"shoving\": \"\",\n  \"stripping\": \"\",\n  \"faulting_stepping_in_cracks\": \"\",\n  \"popout_small_hole\": \"\",\n  \"single_longitudinal_crack\": \"\",\n  \"blowup_or_bulking\": \"\",\n  \"polished_surface_glazing\": \"\",\n  \"depression\": \"\",\n  \"image_url\": \"https://example.com/img.jpg\"\n}"
+        },
+        "url": "{{baseUrl}}/api/google-sheet-sync/"
+      },
+      "response": []
+    },
+    {
+      "name": "Update row (existing sync_id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sync_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"status\": \"reviewed\",\n  \"latitude\": 20.1,\n  \"longitude\": 73.8,\n  \"chainage_start\": 100,\n  \"chainage_end\": 105,\n  \"project_name\": \"  Agra   Bypass Road  \",\n  \"distress_type\": \"Pothole\",\n  \"direction\": \"LHS\",\n  \"date\": \"2026-07-17\",\n  \"image_url\": \"\"\n}"
+        },
+        "url": "{{baseUrl}}/api/google-sheet-sync/"
+      },
+      "response": []
+    },
+    {
+      "name": "Project not found (404)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sync_id\": \"\",\n  \"latitude\": 19.991,\n  \"longitude\": 73.789,\n  \"project_name\": \"Unknown Project XYZ\",\n  \"distress_type\": \"Crack\"\n}"
+        },
+        "url": "{{baseUrl}}/api/google-sheet-sync/"
+      },
+      "response": []
+    },
+    {
+      "name": "Validation error (400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sync_id\": \"\",\n  \"latitude\": 999,\n  \"longitude\": 73.789,\n  \"project_name\": \"\",\n  \"distress_type\": \"\"\n}"
+        },
+        "url": "{{baseUrl}}/api/google-sheet-sync/"
+      },
+      "response": []
+    }
+  ]
+}

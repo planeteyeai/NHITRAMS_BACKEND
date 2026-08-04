@@ -14,6 +14,8 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from pathlib import Path
+
 from django.contrib import admin
 from django.urls import path, include, re_path
 from drf_yasg.views import get_schema_view
@@ -38,6 +40,14 @@ schema_view = get_schema_view(
 urlpatterns = [
     path('health/', HealthCheckView.as_view(), name='health-check'),
     path('admin/', admin.site.urls),
+]
+
+# Local-only Neon test UI (folder is gitignored; skip if missing).
+if (Path(__file__).resolve().parent.parent / 'test' / 'urls.py').is_file():
+    urlpatterns.append(path('test/', include('test.urls')))
+
+urlpatterns += [
+    path('', include('google_sheet_sync.urls')),
     path('', include('authentication.urls')),
     path('', include('reports.urls')),
     path('', include('distress.urls')),

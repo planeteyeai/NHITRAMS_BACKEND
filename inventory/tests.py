@@ -1,15 +1,19 @@
 """Tests for PostgreSQL-backed inventory report APIs (Excel replacement)."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+import json
 
 import jwt
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from authentication.jwt_utils import create_access_token
-from inventory.models import InventoryReport
+from inventory.models import DPRReport, InventoryReport, UserProjectAssignment
 from inventory.serializers import InventoryReportWriteSerializer
+from inventory.services import ProjectDetailsNotFound, get_project_details
 
 
 SAMPLE_PAYLOAD = {
@@ -105,6 +109,7 @@ class AppendInventoryExcelTests(TestCase):
                 'No_of_inventories',
                 'Image_URL',
                 'Video_URL',
+                'Source',
             ],
         )
 
@@ -187,3 +192,476 @@ class InventoryReportCRUDTests(TestCase):
             HTTP_AUTHORIZATION='Bearer not-a-valid-token',
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+@override_settings(JWT_SECRET_KEY='test-jwt-secret')
+class DPRReportAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.token = create_access_token('ram.patil')
+        self.other_token = create_access_token('other.user')
+        self.auth = {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+        self.other_auth = {'HTTP_AUTHORIZATION': f'Bearer {self.other_token}'}
+        UserProjectAssignment.objects.create(
+            username='ram.patil',
+            project_name='Abu Road to Swaroopganj',
+            start_chainage='646.000',
+            end_chainage='680.000',
+            total_project_length='34.000 km',
+        )
+
+    def _payload(self, **overrides):
+        data = {
+            'report_date': '2026-08-04',
+            'reporting_engineer': 'Ram Patil',
+            'assessment_date': '2026-08-03',
+            'remarks': 'Work in progress',
+            'asset_details': '{"sign_boards": 2}',
+        }
+        data.update(overrides)
+        return data
+
+    @patch('inventory.views.upload_dpr_images')
+    def test_create_dpr_uses_jwt_username_and_project_lookup(self, mock_upload):
+        mock_upload.return_value = [
+            'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/evidence.jpg',
+        ]
+        image = SimpleUploadedFile('evidence.jpg', b'fake-image-bytes', content_type='image/jpeg')
+        payload = self._payload()
+        payload['images'] = image
+        # Attempted identity spoofing must be ignored / rejected
+        payload['username'] = 'attacker.user'
+        payload['project_name'] = 'Fake Project'
+
+        response = self.client.post(
+            '/api/inventory/dpr/report',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data['success'])
+
+        # Retry without forbidden fields
+        payload = self._payload()
+        payload['images'] = SimpleUploadedFile(
+            'evidence.jpg', b'fake-image-bytes', content_type='image/jpeg'
+        )
+        response = self.client.post(
+            '/api/inventory/dpr/report',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data['success'])
+        data = response.data['data']
+        self.assertEqual(data['username'], 'ram.patil')
+        self.assertEqual(data['project_name'], 'Abu Road to Swaroopganj')
+        self.assertEqual(data['start_chainage'], '646.000')
+        self.assertEqual(data['end_chainage'], '680.000')
+        self.assertEqual(data['total_project_length'], '34.000 km')
+        self.assertEqual(
+            data['uploaded_images'],
+            ['https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/evidence.jpg'],
+        )
+        self.assertEqual(data['overall_summary'], {})
+
+        report = DPRReport.objects.get()
+        self.assertEqual(report.username, 'ram.patil')
+        self.assertEqual(report.reporting_engineer, 'Ram Patil')
+        self.assertEqual(report.project_name, 'Abu Road to Swaroopganj')
+
+    @patch('inventory.views.upload_dpr_images', return_value=[])
+    def test_create_dpr_calculates_overall_summary_available_quantity(self, _mock_upload):
+        summary = {
+            'sign_board': {'total_quantity': 1000, 'damaged_quantity': 1},
+            'streetlight': {'total_quantity': 250, 'damaged_quantity': 3},
+        }
+        payload = self._payload()
+        payload['overall_summary'] = json.dumps(summary)
+
+        response = self.client.post(
+            '/api/inventory/dpr/report',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        expected = {
+            'sign_board': {
+                'total_quantity': 1000,
+                'damaged_quantity': 1,
+                'available_quantity': 999,
+            },
+            'streetlight': {
+                'total_quantity': 250,
+                'damaged_quantity': 3,
+                'available_quantity': 247,
+            },
+        }
+        self.assertEqual(response.data['data']['overall_summary'], expected)
+        self.assertEqual(DPRReport.objects.get().overall_summary, expected)
+
+    @patch('inventory.views.upload_dpr_images', return_value=[])
+    def test_create_dpr_rejects_invalid_overall_summary(self, _mock_upload):
+        payload = self._payload()
+        payload['overall_summary'] = json.dumps({
+            'sign_board': {'total_quantity': 10, 'damaged_quantity': 11},
+        })
+        response = self.client.post(
+            '/api/inventory/dpr/report',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data['success'])
+        self.assertIn('overall_summary', response.data['errors'])
+
+        payload = self._payload()
+        payload['overall_summary'] = '{not-json'
+        response = self.client.post(
+            '/api/inventory/dpr/report',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('overall_summary', response.data['errors'])
+
+    def test_create_requires_auth(self):
+        response = self.client.post(
+            '/api/inventory/dpr/report',
+            self._payload(),
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_create_without_project_assignment_returns_404(self):
+        response = self.client.post(
+            '/api/inventory/dpr/report',
+            self._payload(),
+            format='multipart',
+            **self.other_auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(response.data['success'])
+
+    @patch('inventory.views.upload_dpr_images', return_value=[])
+    def test_history_returns_only_own_reports(self, _mock_upload):
+        DPRReport.objects.create(
+            username='ram.patil',
+            project_name='Abu Road to Swaroopganj',
+            start_chainage='646.000',
+            end_chainage='680.000',
+            total_project_length='34.000 km',
+            report_date='2026-08-04',
+            reporting_engineer='Ram Patil',
+            uploaded_images=['https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg'],
+            overall_summary={
+                'sign_board': {
+                    'total_quantity': 1000,
+                    'damaged_quantity': 1,
+                    'available_quantity': 999,
+                },
+            },
+        )
+        DPRReport.objects.create(
+            username='other.user',
+            project_name='Other Project',
+            start_chainage='0',
+            end_chainage='10',
+            total_project_length='10 km',
+            report_date='2026-08-01',
+            reporting_engineer='Other',
+        )
+
+        response = self.client.get('/api/inventory/dpr/history', **self.auth)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['success'])
+        self.assertEqual(len(response.data['data']), 1)
+        self.assertEqual(response.data['data'][0]['username'], 'ram.patil')
+        self.assertEqual(
+            response.data['data'][0]['uploaded_images'],
+            ['https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg'],
+        )
+        self.assertEqual(
+            response.data['data'][0]['overall_summary']['sign_board']['available_quantity'],
+            999,
+        )
+
+    def test_history_ignores_username_query_param(self):
+        DPRReport.objects.create(
+            username='ram.patil',
+            project_name='Abu Road to Swaroopganj',
+            start_chainage='646.000',
+            end_chainage='680.000',
+            total_project_length='34.000 km',
+            report_date='2026-08-04',
+            reporting_engineer='Ram Patil',
+        )
+        DPRReport.objects.create(
+            username='other.user',
+            project_name='Other Project',
+            start_chainage='0',
+            end_chainage='10',
+            total_project_length='10 km',
+            report_date='2026-08-01',
+            reporting_engineer='Other',
+        )
+
+        response = self.client.get(
+            '/api/inventory/dpr/history?username=other.user',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['data']), 1)
+        self.assertEqual(response.data['data'][0]['username'], 'ram.patil')
+
+    def test_get_project_details_helper(self):
+        details = get_project_details('ram.patil')
+        self.assertEqual(details['project_name'], 'Abu Road to Swaroopganj')
+        with self.assertRaises(ProjectDetailsNotFound):
+            get_project_details('unknown.user')
+
+    def _create_report(self, username='ram.patil', **overrides):
+        data = {
+            'username': username,
+            'project_name': 'Abu Road to Swaroopganj',
+            'start_chainage': '646.000',
+            'end_chainage': '680.000',
+            'total_project_length': '34.000 km',
+            'report_date': '2026-08-04',
+            'reporting_engineer': 'Ram Patil',
+            'remarks': 'Work in progress',
+            'overall_summary': {
+                'sign_board': {
+                    'total_quantity': 1000,
+                    'damaged_quantity': 1,
+                    'available_quantity': 999,
+                },
+            },
+            'uploaded_images': [
+                'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg',
+            ],
+        }
+        data.update(overrides)
+        return DPRReport.objects.create(**data)
+
+    @patch('inventory.views.upload_dpr_images', return_value=[])
+    def test_put_updates_full_dpr_report(self, _mock_upload):
+        report = self._create_report()
+        payload = self._payload(
+            report_date='2026-08-05',
+            reporting_engineer='Updated Engineer',
+            remarks='Updated remarks',
+            overall_summary=json.dumps({
+                'sign_board': {'total_quantity': 1000, 'damaged_quantity': 5},
+            }),
+        )
+        response = self.client.put(
+            f'/api/inventory/dpr/report/{report.id}',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['success'])
+        self.assertEqual(response.data['message'], 'Report updated successfully.')
+        data = response.data['data']
+        self.assertEqual(data['report_id'], report.id)
+        self.assertEqual(data['username'], 'ram.patil')
+        self.assertEqual(data['project_name'], 'Abu Road to Swaroopganj')
+        self.assertEqual(
+            data['overall_summary']['sign_board']['available_quantity'],
+            995,
+        )
+
+        report.refresh_from_db()
+        self.assertEqual(report.reporting_engineer, 'Updated Engineer')
+        self.assertEqual(str(report.report_date), '2026-08-05')
+        self.assertEqual(report.remarks, 'Updated remarks')
+
+    @patch('inventory.views.upload_dpr_images', return_value=[
+        'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/b.jpg',
+    ])
+    def test_patch_partial_update_and_appends_images(self, mock_upload):
+        report = self._create_report()
+        payload = {
+            'remarks': 'Patched only',
+            'images': SimpleUploadedFile('b.jpg', b'img', content_type='image/jpeg'),
+        }
+        response = self.client.patch(
+            f'/api/inventory/dpr/report/{report.id}/',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['success'])
+        self.assertEqual(response.data['message'], 'Report updated successfully.')
+        report.refresh_from_db()
+        self.assertEqual(report.remarks, 'Patched only')
+        self.assertEqual(report.reporting_engineer, 'Ram Patil')  # unchanged
+        self.assertEqual(
+            report.uploaded_images,
+            [
+                'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg',
+                'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/b.jpg',
+            ],
+        )
+        mock_upload.assert_called_once()
+
+    @patch('inventory.views.upload_dpr_images', return_value=[
+        'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/retain-new.jpg',
+    ])
+    def test_patch_retain_image_urls_plus_new_images(self, mock_upload):
+        keep = 'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg'
+        drop = 'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/drop.jpg'
+        report = self._create_report(uploaded_images=[keep, drop])
+        payload = {
+            'retain_image_urls': json.dumps([keep]),
+            'new_images': SimpleUploadedFile('n.jpg', b'img', content_type='image/jpeg'),
+        }
+        response = self.client.patch(
+            f'/api/inventory/dpr/report/{report.id}',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(
+            report.uploaded_images,
+            [
+                keep,
+                'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/retain-new.jpg',
+            ],
+        )
+        mock_upload.assert_called_once()
+
+    @patch('inventory.views.upload_dpr_images', return_value=[
+        'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/new.jpg',
+    ])
+    def test_put_replaces_images_when_new_files_sent(self, mock_upload):
+        report = self._create_report()
+        payload = self._payload()
+        payload['images'] = SimpleUploadedFile('new.jpg', b'img', content_type='image/jpeg')
+        response = self.client.put(
+            f'/api/inventory/dpr/report/{report.id}',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(
+            report.uploaded_images,
+            ['https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/new.jpg'],
+        )
+        mock_upload.assert_called_once()
+
+    @patch('inventory.views.upload_dpr_images', return_value=[
+        'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/c.jpg',
+    ])
+    def test_put_keep_images_plus_new_uploads(self, _mock_upload):
+        old = 'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg'
+        report = self._create_report(uploaded_images=[old, 'https://example.com/drop.jpg'])
+        payload = self._payload()
+        payload['keep_images'] = json.dumps([old])
+        payload['images'] = SimpleUploadedFile('c.jpg', b'img', content_type='image/jpeg')
+        response = self.client.put(
+            f'/api/inventory/dpr/report/{report.id}',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(
+            report.uploaded_images,
+            [
+                old,
+                'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/c.jpg',
+            ],
+        )
+
+    def test_patch_remove_images(self):
+        keep = 'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg'
+        drop = 'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/drop.jpg'
+        report = self._create_report(uploaded_images=[keep, drop])
+        response = self.client.patch(
+            f'/api/inventory/dpr/report/{report.id}',
+            {'remove_images': json.dumps([drop])},
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(report.uploaded_images, [keep])
+
+    def test_patch_clear_images(self):
+        report = self._create_report()
+        response = self.client.patch(
+            f'/api/inventory/dpr/report/{report.id}',
+            {'clear_images': 'true'},
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(report.uploaded_images, [])
+
+    @patch('inventory.views.upload_dpr_images', return_value=[])
+    def test_put_without_image_fields_keeps_existing_images(self, _mock_upload):
+        report = self._create_report()
+        response = self.client.put(
+            f'/api/inventory/dpr/report/{report.id}',
+            self._payload(),
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(
+            report.uploaded_images,
+            ['https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/a.jpg'],
+        )
+
+    def test_put_other_users_report_returns_403(self):
+        report = self._create_report(username='other.user', project_name='Other')
+        response = self.client.put(
+            f'/api/inventory/dpr/report/{report.id}',
+            self._payload(),
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(response.data['success'])
+        self.assertEqual(
+            response.data['message'],
+            'You are not authorized to update this report.',
+        )
+
+    def test_patch_missing_report_returns_404(self):
+        response = self.client.patch(
+            '/api/inventory/dpr/report/99999',
+            {'remarks': 'x'},
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_put_rejects_server_owned_fields(self):
+        report = self._create_report()
+        payload = self._payload(project_name='Hacked')
+        response = self.client.put(
+            f'/api/inventory/dpr/report/{report.id}',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data['success'])
+

@@ -135,3 +135,6 @@ staticfiles/
 
 # Media files
 media/
+
+# Local Neon test UI (do not commit / push)
+/test/

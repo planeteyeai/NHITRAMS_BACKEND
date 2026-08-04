@@ -68,6 +68,8 @@ COPY --chown=appuser:appuser pis ./pis
 COPY --chown=appuser:appuser traffic ./traffic
 COPY --chown=appuser:appuser pavement ./pavement
 COPY --chown=appuser:appuser roadside ./roadside
+COPY --chown=appuser:appuser google_sheet_sync ./google_sheet_sync
+COPY --chown=appuser:appuser test ./test
 COPY --chown=appuser:appuser docker/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh \

@@ -2,7 +2,21 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.db.models import Sum, Count
 from django.contrib.admin import SimpleListFilter
-from .models import Inventory, AssetType, SubAssetType, Project, RoadSegment, InventoryReport
+from .models import (
+    Inventory,
+    AssetType,
+    SubAssetType,
+    Project,
+    RoadSegment,
+    InventoryReport,
+    UserProjectAssignment,
+    DPRReport,
+    RoutineMaintenanceCategory,
+    RoutineMaintenanceSubcategory,
+    SideMaster,
+    SeverityMaster,
+    RoutineMaintenanceReport,
+)
 
 
 # ─────────────────────────────────────────────
@@ -270,4 +284,85 @@ class InventoryReportAdmin(admin.ModelAdmin):
     list_filter = ('Asset_type', 'Direction', 'Project_Name')
     search_fields = ('username', 'Project_Name', 'Asset_type', 'Image_URL', 'Video_URL')
     readonly_fields = ('created_at', 'updated_at')
+    ordering = ('-created_at',)
+
+
+@admin.register(UserProjectAssignment)
+class UserProjectAssignmentAdmin(admin.ModelAdmin):
+    list_display = (
+        'username',
+        'project_name',
+        'start_chainage',
+        'end_chainage',
+        'total_project_length',
+        'updated_at',
+    )
+    search_fields = ('username', 'project_name')
+    ordering = ('username',)
+
+
+@admin.register(DPRReport)
+class DPRReportAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'username',
+        'project_name',
+        'report_date',
+        'reporting_engineer',
+        'status',
+        'created_at',
+    )
+    list_filter = ('status', 'project_name', 'report_date')
+    search_fields = ('username', 'project_name', 'reporting_engineer', 'remarks')
+    readonly_fields = ('created_at', 'updated_at', 'uploaded_images')
+    ordering = ('-created_at',)
+
+
+@admin.register(RoutineMaintenanceCategory)
+class RoutineMaintenanceCategoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'display_order', 'is_active', 'updated_at')
+    list_filter = ('is_active',)
+    search_fields = ('name',)
+    ordering = ('display_order', 'name')
+
+
+@admin.register(RoutineMaintenanceSubcategory)
+class RoutineMaintenanceSubcategoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'category', 'name', 'display_order', 'is_active', 'updated_at')
+    list_filter = ('is_active', 'category')
+    search_fields = ('name', 'category__name')
+    ordering = ('category', 'display_order', 'name')
+
+
+@admin.register(SideMaster)
+class SideMasterAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'display_order', 'is_active')
+    list_filter = ('is_active',)
+    ordering = ('display_order', 'name')
+
+
+@admin.register(SeverityMaster)
+class SeverityMasterAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'display_order', 'is_active')
+    list_filter = ('is_active',)
+    ordering = ('display_order', 'name')
+
+
+@admin.register(RoutineMaintenanceReport)
+class RoutineMaintenanceReportAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'username',
+        'project_name',
+        'category',
+        'subcategory',
+        'side',
+        'severity',
+        'inspection_datetime',
+        'status',
+        'created_at',
+    )
+    list_filter = ('status', 'category', 'severity', 'side')
+    search_fields = ('username', 'project_name', 'description_of_work', 'chainage')
+    readonly_fields = ('created_at', 'updated_at', 'uploaded_image_urls')
     ordering = ('-created_at',)
