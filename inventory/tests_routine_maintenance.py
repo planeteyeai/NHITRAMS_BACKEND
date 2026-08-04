@@ -109,12 +109,27 @@ class RoutineMaintenanceAPITests(TestCase):
             _normalize_project_key('abu road to swaroopganj'),
         )
         self.assertEqual(
+            _normalize_project_key('Kochugaon to Kaljar -1'),
+            _normalize_project_key('Kochugaon to Kaljhar-1'),
+        )
+        self.assertEqual(
+            _normalize_project_key('Kochugaon to Kaljar -2'),
+            _normalize_project_key('Kochugaon to Kaljhar-2'),
+        )
+        self.assertEqual(
             _preferred_display_name([
                 'abu road to swaroopganj',
                 'ABU ROAD TO SWAROOPGANJ',
                 'Abu Road to Swaroopganj',
             ]),
             'Abu Road to Swaroopganj',
+        )
+        self.assertEqual(
+            _preferred_display_name([
+                'Kochugaon to Kaljar -1',
+                'Kochugaon to Kaljhar-1',
+            ]),
+            'Kochugaon to Kaljhar-1',
         )
 
     @patch('inventory.services.routine_maintenance.Project.objects')
@@ -124,13 +139,21 @@ class RoutineMaintenanceAPITests(TestCase):
             MagicMock(project_name='abu road to swaroopganj'),
             MagicMock(project_name='  ABU ROAD TO SWAROOPGANJ '),
             MagicMock(project_name='Chittorgarh to Kota'),
+            MagicMock(project_name='Kochugaon to Kaljar -1'),
+            MagicMock(project_name='Kochugaon to Kaljhar-1'),
+            MagicMock(project_name='Kochugaon to Kaljar -2'),
+            MagicMock(project_name='Kochugaon to Kaljhar-2'),
         ]
         mock_objects.all.return_value.only.return_value = rows
         projects = list_inventory_projects()
         names = [row['project_name'] for row in projects]
-        self.assertEqual(len(names), 2)
+        self.assertEqual(len(names), 4)
         self.assertIn('Abu Road to Swaroopganj', names)
         self.assertIn('Chittorgarh to Kota', names)
+        self.assertIn('Kochugaon to Kaljhar-1', names)
+        self.assertIn('Kochugaon to Kaljhar-2', names)
+        self.assertNotIn('Kochugaon to Kaljar -1', names)
+        self.assertNotIn('Kochugaon to Kaljar -2', names)
 
     @patch(
         'inventory.serializers_routine_maintenance.resolve_project_details',

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from django.db import transaction
@@ -42,8 +43,13 @@ def _format_length_km(value) -> str:
 
 
 def _normalize_project_key(name: str) -> str:
-    """Case-insensitive key that collapses internal whitespace."""
-    return ' '.join(str(name or '').split()).casefold()
+    """Match key ignoring case, whitespace, hyphen spacing, and Kaljar/Kaljhar."""
+    text = ' '.join(str(name or '').split()).casefold()
+    # Known spelling variants for the same place.
+    text = text.replace('kaljar', 'kaljhar')
+    # "Kaljar -1" and "Kaljhar-1" are the same project.
+    text = re.sub(r'\s*-\s*', '-', text)
+    return text
 
 
 def _preferred_display_name(names: list[str]) -> str:
@@ -62,6 +68,12 @@ def _preferred_display_name(names: list[str]) -> str:
             score += 2
         elif cleaned[:1].isupper():
             score += 1
+        # Prefer the canonical Kaljhar spelling over Kaljar.
+        folded = cleaned.casefold()
+        if 'kaljhar' in folded:
+            score += 5
+        if re.search(r'\S-\S', cleaned):
+            score += 1  # prefer "Kaljhar-1" over "Kaljhar -1"
         scored.append((score, len(cleaned), cleaned))
     if not scored:
         return ' '.join(str(names[0]).split())
