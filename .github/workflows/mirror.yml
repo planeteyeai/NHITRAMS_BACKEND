@@ -6,10 +6,22 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: pixta-dev/repository-mirroring-action@v1
-        with:
-          target_repo_url: git@github.com:planeteyeai-backup/NHITRAMS_BACKEND.git
-          ssh_private_key: ${{ secrets.MIRROR_SSH_KEY }}
+
+      # Pure-git mirror (avoids Docker Hub timeouts from docker-based mirror actions).
+      - name: Mirror to backup repository
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.MIRROR_SSH_KEY }}
+          TARGET_REPO: git@github.com:planeteyeai-backup/NHITRAMS_BACKEND.git
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/mirror_key
+          chmod 600 ~/.ssh/mirror_key
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git remote remove mirror 2>/dev/null || true
+          git remote add mirror "$TARGET_REPO"
+          git push --mirror mirror

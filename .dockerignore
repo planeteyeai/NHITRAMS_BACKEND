@@ -44,6 +44,19 @@ media/
 *.log
 docker-compose.override.yml
 
+# Local-only Neon test UI (gitignored; never present in Railway build context)
+test/
+/test/
+
+# Large local datasets / one-off scripts — keep out of image context
+*.xlsx
+*.xls
+Inventory_Dataset*
+_create_*.py
+_fix_*.py
+_refresh_*.py
+_sync_*.py
+
 # Docker (avoid recursive context weirdness)
 Dockerfile*
 docker-compose*.yml
