@@ -1,6 +1,6 @@
 """Tests for Routine Maintenance APIs."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 from rest_framework import status
@@ -14,6 +14,11 @@ from inventory.models import (
     SeverityMaster,
     SideMaster,
 )
+from inventory.services.routine_maintenance import (
+    _normalize_project_key,
+    _preferred_display_name,
+    list_inventory_projects,
+)
 
 SAMPLE_PROJECT = {
     'id': 1,
@@ -22,6 +27,8 @@ SAMPLE_PROJECT = {
     'end_chainage': '680.000',
     'total_project_length': '34 km',
 }
+
+SAMPLE_PROJECT_NAME = {'project_name': 'Abu Road to Swaroopganj'}
 
 
 @override_settings(JWT_SECRET_KEY='test-jwt-secret')
@@ -42,7 +49,7 @@ class RoutineMaintenanceAPITests(TestCase):
 
     def _payload(self, **overrides):
         data = {
-            'project_id': SAMPLE_PROJECT['id'],
+            'project_name': SAMPLE_PROJECT['project_name'],
             'category_id': self.category.id,
             'subcategory_id': self.subcategory.id,
             'side_id': self.side.id,
@@ -66,7 +73,7 @@ class RoutineMaintenanceAPITests(TestCase):
 
     @patch(
         'inventory.services.routine_maintenance.list_inventory_projects',
-        return_value=[SAMPLE_PROJECT],
+        return_value=[SAMPLE_PROJECT_NAME],
     )
     def test_master_returns_nested_dropdowns(self, _mock_projects):
         response = self.client.get('/api/inventory/routine-maintenance/master', **self.auth)
@@ -78,6 +85,7 @@ class RoutineMaintenanceAPITests(TestCase):
         self.assertIn('side_master', data)
         self.assertIn('severity_master', data)
         self.assertEqual(data['projects'][0]['project_name'], 'Abu Road to Swaroopganj')
+        self.assertNotIn('id', data['projects'][0])
         self.assertTrue(any(c['name'] == 'Median Maintenance' for c in data['categories']))
         median = next(c for c in data['categories'] if c['name'] == 'Median Maintenance')
         self.assertTrue(median['subcategories'])
@@ -86,13 +94,43 @@ class RoutineMaintenanceAPITests(TestCase):
 
     @patch(
         'inventory.views_routine_maintenance.list_inventory_projects',
-        return_value=[SAMPLE_PROJECT],
+        return_value=[SAMPLE_PROJECT_NAME],
     )
     def test_projects_list_endpoint(self, _mock_projects):
         response = self.client.get('/api/inventory/projects', **self.auth)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['success'])
-        self.assertEqual(response.data['data'][0]['id'], 1)
+        self.assertEqual(response.data['data'][0]['project_name'], 'Abu Road to Swaroopganj')
+        self.assertNotIn('id', response.data['data'][0])
+
+    def test_project_name_normalization_helpers(self):
+        self.assertEqual(
+            _normalize_project_key('  Abu   Road to Swaroopganj '),
+            _normalize_project_key('abu road to swaroopganj'),
+        )
+        self.assertEqual(
+            _preferred_display_name([
+                'abu road to swaroopganj',
+                'ABU ROAD TO SWAROOPGANJ',
+                'Abu Road to Swaroopganj',
+            ]),
+            'Abu Road to Swaroopganj',
+        )
+
+    @patch('inventory.services.routine_maintenance.Project.objects')
+    def test_list_inventory_projects_dedupes_case_and_whitespace(self, mock_objects):
+        rows = [
+            MagicMock(project_name='Abu Road to Swaroopganj'),
+            MagicMock(project_name='abu road to swaroopganj'),
+            MagicMock(project_name='  ABU ROAD TO SWAROOPGANJ '),
+            MagicMock(project_name='Chittorgarh to Kota'),
+        ]
+        mock_objects.all.return_value.only.return_value = rows
+        projects = list_inventory_projects()
+        names = [row['project_name'] for row in projects]
+        self.assertEqual(len(names), 2)
+        self.assertIn('Abu Road to Swaroopganj', names)
+        self.assertIn('Chittorgarh to Kota', names)
 
     @patch(
         'inventory.serializers_routine_maintenance.resolve_project_details',
@@ -101,12 +139,11 @@ class RoutineMaintenanceAPITests(TestCase):
     @patch('inventory.services.routine_maintenance.upload_dpr_images', return_value=[
         'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged+Assets/rm.jpg',
     ])
-    def test_create_report_uses_jwt_and_project_id(self, mock_upload, _mock_project):
+    def test_create_report_uses_jwt_and_project_name(self, mock_upload, _mock_project):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         payload = self._payload()
         payload['username'] = 'attacker'
-        payload['project_name'] = 'Fake'
         response = self.client.post(
             '/api/inventory/routine-maintenance/report',
             payload,
@@ -128,7 +165,7 @@ class RoutineMaintenanceAPITests(TestCase):
         data = response.data['data']
         self.assertEqual(data['username'], 'ram.patil')
         self.assertEqual(data['project']['project_name'], 'Abu Road to Swaroopganj')
-        self.assertEqual(data['project']['id'], 1)
+        self.assertNotIn('id', data['project'])
         self.assertEqual(data['category']['name'], 'Median Maintenance')
         self.assertEqual(data['side']['name'], 'LHS L1')
         self.assertEqual(
@@ -140,15 +177,16 @@ class RoutineMaintenanceAPITests(TestCase):
         report = RoutineMaintenanceReport.objects.get()
         self.assertEqual(report.username, 'ram.patil')
         self.assertEqual(report.project_id, 1)
+        self.assertEqual(report.project_name, 'Abu Road to Swaroopganj')
         self.assertEqual(report.latitude, 24.5)
 
     @patch(
         'inventory.serializers_routine_maintenance.resolve_project_details',
         return_value=SAMPLE_PROJECT,
     )
-    def test_create_rejects_project_name_body_fields(self, _mock):
+    def test_create_rejects_project_id_and_chainage_body_fields(self, _mock):
         payload = self._payload()
-        payload['project_name'] = 'Hacked'
+        payload['project_id'] = 1
         response = self.client.post(
             '/api/inventory/routine-maintenance/report',
             payload,
@@ -156,13 +194,23 @@ class RoutineMaintenanceAPITests(TestCase):
             **self.auth,
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('project_name', response.data['errors'])
+        self.assertIn('project_id', response.data['errors'])
 
-    def test_create_rejects_invalid_project_id(self):
+        payload = self._payload(start_chainage='1.000')
+        response = self.client.post(
+            '/api/inventory/routine-maintenance/report',
+            payload,
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('start_chainage', response.data['errors'])
+
+    def test_create_rejects_invalid_project_name(self):
         from rest_framework.exceptions import ValidationError as DRFValidationError
 
         def _raise_invalid(*_args, **_kwargs):
-            raise DRFValidationError({'project_id': ['Invalid project selected.']})
+            raise DRFValidationError({'project_name': ['Invalid project selected.']})
 
         with patch(
             'inventory.serializers_routine_maintenance.resolve_project_details',
@@ -170,12 +218,12 @@ class RoutineMaintenanceAPITests(TestCase):
         ):
             response = self.client.post(
                 '/api/inventory/routine-maintenance/report',
-                self._payload(project_id=99999),
+                self._payload(project_name='Unknown Road'),
                 format='multipart',
                 **self.auth,
             )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('project_id', response.data['errors'])
+        self.assertIn('project_name', response.data['errors'])
 
     def test_create_rejects_subcategory_from_other_category(self):
         other_cat = RoutineMaintenanceCategory.objects.exclude(pk=self.category.id).first()
@@ -207,9 +255,9 @@ class RoutineMaintenanceAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('latitude', response.data['errors'])
 
-    def test_create_without_project_id_returns_400(self):
+    def test_create_without_project_name_returns_400(self):
         payload = self._payload()
-        del payload['project_id']
+        del payload['project_name']
         response = self.client.post(
             '/api/inventory/routine-maintenance/report',
             payload,
@@ -217,7 +265,7 @@ class RoutineMaintenanceAPITests(TestCase):
             **self.auth,
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('project_id', response.data['errors'])
+        self.assertIn('project_name', response.data['errors'])
 
     def test_history_returns_only_own_reports(self):
         own = RoutineMaintenanceReport.objects.create(
@@ -264,6 +312,7 @@ class RoutineMaintenanceAPITests(TestCase):
             response.data['data'][0]['project']['project_name'],
             'Abu Road to Swaroopganj',
         )
+        self.assertNotIn('id', response.data['data'][0]['project'])
 
     def _create_report(self, **overrides):
         data = {
@@ -395,12 +444,34 @@ class RoutineMaintenanceAPITests(TestCase):
         report = self._create_report()
         response = self.client.patch(
             f'/api/inventory/routine-maintenance/report/{report.id}',
-            {'project_name': 'Hacked', 'description_of_work': 'x'},
+            {'project_id': 99, 'description_of_work': 'x'},
             format='multipart',
             **self.auth,
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(response.data['success'])
+        self.assertIn('project_id', response.data['errors'])
+
+    @patch(
+        'inventory.serializers_routine_maintenance.resolve_project_details',
+        return_value={
+            **SAMPLE_PROJECT,
+            'project_name': 'Chittorgarh to Kota',
+            'id': 3,
+        },
+    )
+    def test_patch_accepts_project_name_refresh(self, _mock):
+        report = self._create_report()
+        response = self.client.patch(
+            f'/api/inventory/routine-maintenance/report/{report.id}',
+            {'project_name': 'chittorgarh to kota'},
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(report.project_name, 'Chittorgarh to Kota')
+        self.assertEqual(report.project_id, 3)
 
     def test_patch_rejects_invalid_lat(self):
         report = self._create_report()

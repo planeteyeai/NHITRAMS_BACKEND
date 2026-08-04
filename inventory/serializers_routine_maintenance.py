@@ -19,7 +19,7 @@ from .services.routine_maintenance import resolve_project_details
 
 RM_SERVER_OWNED_FIELDS = frozenset({
     'username',
-    'project_name',
+    'project_id',
     'start_chainage',
     'end_chainage',
     'total_project_length',
@@ -68,9 +68,9 @@ def _parse_inspection_datetime(raw):
 
 
 class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
-    """Multipart create/update payload. Identity/project name fields are rejected."""
+    """Multipart create/update payload. Identity/chainage snapshot fields are rejected."""
 
-    project_id = serializers.IntegerField(required=False)
+    project_name = serializers.CharField(required=False, allow_blank=False, max_length=255)
     category_id = serializers.IntegerField(required=False)
     subcategory_id = serializers.IntegerField(required=False)
     side_id = serializers.IntegerField(required=False)
@@ -133,7 +133,7 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
             return None
 
         field_sources = {
-            'project_id': ('project_id',),
+            'project_name': ('project_name',),
             'category_id': ('category_id',),
             'subcategory_id': ('subcategory_id',),
             'side_id': ('side_id',),
@@ -255,10 +255,10 @@ class RoutineMaintenanceReportWriteSerializer(serializers.Serializer):
         return category, subcategory
 
     def validate(self, attrs):
-        if 'project_id' in attrs:
-            attrs['project'] = resolve_project_details(attrs['project_id'])
+        if 'project_name' in attrs:
+            attrs['project'] = resolve_project_details(attrs['project_name'])
         elif not self.partial:
-            raise serializers.ValidationError({'project_id': ['This field is required.']})
+            raise serializers.ValidationError({'project_name': ['This field is required.']})
 
         category, subcategory = self._resolve_category_pair(attrs)
         if category is not None:
@@ -353,7 +353,6 @@ class RoutineMaintenanceReportReadSerializer(serializers.ModelSerializer):
 
     def get_project(self, obj):
         return {
-            'id': obj.project_id,
             'project_name': obj.project_name,
             'start_chainage': obj.start_chainage,
             'end_chainage': obj.end_chainage,

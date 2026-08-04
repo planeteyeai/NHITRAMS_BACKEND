@@ -42,7 +42,10 @@ class InventoryProjectsListView(APIView):
     permission_classes = [IsJWTAuthenticated]
 
     @swagger_auto_schema(
-        operation_description='Return all projects from the projects table for dropdown selection.',
+        operation_description=(
+            'Return deduplicated canonical project names from the projects table '
+            'for dropdown selection.'
+        ),
         responses={200: openapi.Response('Project list'), 401: 'Unauthorized'},
         security=[{'Bearer': []}],
         tags=['Inventory Projects'],
@@ -91,8 +94,8 @@ class RoutineMaintenanceReportCreateView(APIView):
     @swagger_auto_schema(
         operation_description=(
             'Create a routine maintenance report. '
-            'Send project_id; project details are resolved from the projects table. '
-            'Username is taken from the JWT.'
+            'Send project_name; project details are resolved case-insensitively '
+            'from the projects table. Username is taken from the JWT.'
         ),
         responses={
             201: openapi.Response('Created'),
@@ -202,7 +205,7 @@ class RoutineMaintenanceReportDetailView(APIView):
         operation_description=(
             'Partial update of a routine maintenance report (PATCH). '
             'Send only fields to change. Username is immutable. '
-            'Optional project_id refreshes stored project snapshot. '
+            'Optional project_name refreshes stored project snapshot. '
             'Images: use `retain_image_urls` / `keep_images`, `remove_images`, '
             '`clear_images`, and upload via `images` / `new_images`.'
         ),

@@ -358,7 +358,7 @@ class RoutineMaintenanceReport(models.Model):
     id = models.BigAutoField(primary_key=True)
     username = models.CharField(max_length=150, db_index=True)
 
-    # Snapshot resolved from Project via project_id (not UserProjectAssignment)
+    # Snapshot resolved from Project via project_name (case/whitespace insensitive)
     project_id = models.IntegerField(null=True, blank=True, db_index=True)
     project_name = models.CharField(max_length=255)
     start_chainage = models.CharField(max_length=100)

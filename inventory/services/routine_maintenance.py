@@ -41,7 +41,35 @@ def _format_length_km(value) -> str:
     return f'{number} km'
 
 
-def project_payload_from_model(project: Project, *, start=None, end=None) -> dict:
+def _normalize_project_key(name: str) -> str:
+    """Case-insensitive key that collapses internal whitespace."""
+    return ' '.join(str(name or '').split()).casefold()
+
+
+def _preferred_display_name(names: list[str]) -> str:
+    """Pick a stable display label from duplicate name variants."""
+    if not names:
+        return ''
+    scored = []
+    for raw in names:
+        cleaned = ' '.join(str(raw).split())
+        if not cleaned:
+            continue
+        score = 0
+        if cleaned == cleaned.title():
+            score += 3
+        elif cleaned[:1].isupper() and any(c.islower() for c in cleaned):
+            score += 2
+        elif cleaned[:1].isupper():
+            score += 1
+        scored.append((score, len(cleaned), cleaned))
+    if not scored:
+        return ' '.join(str(names[0]).split())
+    scored.sort(key=lambda item: (item[0], item[1], item[2].casefold()), reverse=True)
+    return scored[0][2]
+
+
+def project_payload_from_model(project: Project, *, start=None, end=None, display_name: str | None = None) -> dict:
     """Build the API project object from a Project row (+ optional chainage bounds)."""
     if start is None or end is None:
         bounds = RoadSegment.objects.filter(project_id=project.project_id).aggregate(
@@ -53,7 +81,7 @@ def project_payload_from_model(project: Project, *, start=None, end=None) -> dic
 
     return {
         'id': project.project_id,
-        'project_name': project.project_name,
+        'project_name': display_name or project.project_name,
         'start_chainage': _format_chainage(start),
         'end_chainage': _format_chainage(end),
         'total_project_length': _format_length_km(project.length_km),
@@ -61,43 +89,44 @@ def project_payload_from_model(project: Project, *, start=None, end=None) -> dic
 
 
 def list_inventory_projects() -> list[dict]:
-    """Return all projects for the frontend dropdown (existing projects table)."""
-    bounds_by_project = {
-        row['project_id']: row
-        for row in RoadSegment.objects.values('project_id').annotate(
-            start=Min('chainage_start'),
-            end=Max('chainage_end'),
-        )
-    }
-    payload = []
-    for project in Project.objects.all().order_by('project_name'):
-        bounds = bounds_by_project.get(project.project_id, {})
-        payload.append(
-            project_payload_from_model(
-                project,
-                start=bounds.get('start'),
-                end=bounds.get('end'),
-            )
-        )
+    """Return deduplicated canonical project names for dropdowns."""
+    groups: dict[str, list[str]] = {}
+    for project in Project.objects.all().only('project_name'):
+        key = _normalize_project_key(project.project_name)
+        if not key:
+            continue
+        groups.setdefault(key, []).append(project.project_name)
+
+    payload = [
+        {'project_name': _preferred_display_name(names)}
+        for names in groups.values()
+    ]
+    payload.sort(key=lambda row: row['project_name'].casefold())
     return payload
 
 
-def resolve_project_details(project_id) -> dict:
-    """Load project snapshot by id. Raises ValidationError on invalid id."""
-    if project_id is None or project_id == '':
-        raise ValidationError({'project_id': ['Invalid project selected.']})
+def resolve_project_details(project_name) -> dict:
+    """Resolve project snapshot by name (case/whitespace insensitive)."""
+    if project_name is None or str(project_name).strip() == '':
+        raise ValidationError({'project_name': ['This field is required.']})
 
-    try:
-        project_id = int(project_id)
-    except (TypeError, ValueError) as exc:
-        raise ValidationError({'project_id': ['Invalid project selected.']}) from exc
+    key = _normalize_project_key(project_name)
+    if not key:
+        raise ValidationError({'project_name': ['Invalid project selected.']})
 
-    try:
-        project = Project.objects.get(pk=project_id)
-    except Project.DoesNotExist as exc:
-        raise ValidationError({'project_id': ['Invalid project selected.']}) from exc
+    matches = [
+        project
+        for project in Project.objects.all()
+        if _normalize_project_key(project.project_name) == key
+    ]
+    if not matches:
+        raise ValidationError({'project_name': ['Invalid project selected.']})
 
-    return project_payload_from_model(project)
+    # Prefer the most complete row among duplicates.
+    matches.sort(key=lambda p: (-(p.length_km or 0), p.project_id))
+    project = matches[0]
+    display = _preferred_display_name([m.project_name for m in matches])
+    return project_payload_from_model(project, display_name=display)
 
 
 def get_routine_maintenance_master() -> dict:
@@ -215,7 +244,7 @@ def get_owned_routine_maintenance_report(username: str, report_id: int) -> Routi
 
 
 def _apply_project_snapshot(report: RoutineMaintenanceReport, project: dict) -> None:
-    report.project_id = project['id']
+    report.project_id = project.get('id')
     report.project_name = project['project_name']
     report.start_chainage = project['start_chainage']
     report.end_chainage = project['end_chainage']
@@ -227,7 +256,7 @@ def create_routine_maintenance_report(*, username: str, validated: dict, image_f
     """Persist a routine maintenance report for the authenticated username."""
     project = validated.get('project')
     if not project:
-        project = resolve_project_details(validated.get('project_id'))
+        project = resolve_project_details(validated.get('project_name'))
 
     try:
         uploaded_urls = upload_dpr_images(image_files) if image_files else []
@@ -244,7 +273,7 @@ def create_routine_maintenance_report(*, username: str, validated: dict, image_f
 
     return RoutineMaintenanceReport.objects.create(
         username=username,
-        project_id=project['id'],
+        project_id=project.get('id'),
         project_name=project['project_name'],
         start_chainage=project['start_chainage'],
         end_chainage=project['end_chainage'],
@@ -286,8 +315,8 @@ def update_routine_maintenance_report(
 
     if 'project' in validated:
         _apply_project_snapshot(report, validated['project'])
-    elif 'project_id' in validated:
-        _apply_project_snapshot(report, resolve_project_details(validated['project_id']))
+    elif 'project_name' in validated:
+        _apply_project_snapshot(report, resolve_project_details(validated['project_name']))
 
     if 'category' in validated:
         report.category = validated['category']
