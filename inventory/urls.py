@@ -20,6 +20,7 @@ from .views_routine_maintenance import (
     RoutineMaintenanceReportDetailView,
     RoutineMaintenanceHistoryView,
 )
+from .views_dpr_generate import AssetChangeDPRGenerateView, AssetChangeDPRGeneratePDFView
 
 urlpatterns = [
     path('inventory_filter/', InventoryFilterView.as_view(), name='inventory-filter'),
@@ -55,6 +56,28 @@ urlpatterns = [
     ),
     path('api/inventory/dpr/history', DPRReportHistoryView.as_view(), name='inventory-dpr-history'),
     path('api/inventory/dpr/history/', DPRReportHistoryView.as_view(), name='inventory-dpr-history-slash'),
+
+    # Asset Change Detection DPR generate (JWT-protected, read-only)
+    path(
+        'api/inventory/dpr/generate',
+        AssetChangeDPRGenerateView.as_view(),
+        name='inventory-dpr-generate',
+    ),
+    path(
+        'api/inventory/dpr/generate/',
+        AssetChangeDPRGenerateView.as_view(),
+        name='inventory-dpr-generate-slash',
+    ),
+    path(
+        'api/inventory/dpr/generate-pdf',
+        AssetChangeDPRGeneratePDFView.as_view(),
+        name='inventory-dpr-generate-pdf',
+    ),
+    path(
+        'api/inventory/dpr/generate-pdf/',
+        AssetChangeDPRGeneratePDFView.as_view(),
+        name='inventory-dpr-generate-pdf-slash',
+    ),
 
     # Inventory projects (JWT-protected dropdown source)
     path('api/inventory/projects', InventoryProjectsListView.as_view(), name='inventory-projects'),
