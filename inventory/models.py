@@ -520,3 +520,31 @@ class RoutineMaintenanceReport(models.Model):
     def __str__(self):
         return f'RMReport {self.id} ({self.username}) — {self.category.name}'
 
+
+# ─────────────────────────────────────────────
+# Chainage auto-fetch (KML GPS reference points)
+# ─────────────────────────────────────────────
+
+
+class ChainageReferencePoint(models.Model):
+    """GPS reference point from a KML file, mapping lat/lng to a chainage value."""
+
+    id = models.BigAutoField(primary_key=True)
+    project_name = models.CharField(max_length=255, db_index=True)
+    chainage_meters = models.FloatField()
+    chainage_km = models.FloatField(db_index=True)
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+
+    class Meta:
+        db_table = 'chainage_reference_points'
+        indexes = [
+            models.Index(
+                fields=['project_name', 'latitude', 'longitude'],
+                name='crp_project_latlng_idx',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.project_name} @ {self.chainage_km:.3f} km'
+

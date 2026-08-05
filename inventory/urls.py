@@ -11,6 +11,7 @@ from .views import (
     DPRReportCreateView,
     DPRReportDetailView,
     DPRReportHistoryView,
+    AutoFetchChainageView,
 )
 from .views_routine_maintenance import (
     InventoryProjectsListView,
@@ -99,5 +100,17 @@ urlpatterns = [
         'api/inventory/routine-maintenance/history/',
         RoutineMaintenanceHistoryView.as_view(),
         name='inventory-rm-history-slash',
+    ),
+
+    # Auto-fetch chainage from live GPS (JWT-protected)
+    path(
+        'api/inventory/autofetch-chainage',
+        AutoFetchChainageView.as_view(),
+        name='inventory-autofetch-chainage',
+    ),
+    path(
+        'api/inventory/autofetch-chainage/',
+        AutoFetchChainageView.as_view(),
+        name='inventory-autofetch-chainage-slash',
     ),
 ]

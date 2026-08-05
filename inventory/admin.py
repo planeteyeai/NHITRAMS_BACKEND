@@ -18,6 +18,7 @@ from .models import (
     SideMaster,
     SeverityMaster,
     RoutineMaintenanceReport,
+    ChainageReferencePoint,
 )
 
 
@@ -384,3 +385,18 @@ class RoutineMaintenanceReportAdmin(admin.ModelAdmin):
     search_fields = ('username', 'project_name', 'description_of_work', 'chainage')
     readonly_fields = ('created_at', 'updated_at', 'uploaded_image_urls')
     ordering = ('-created_at',)
+
+
+@admin.register(ChainageReferencePoint)
+class ChainageReferencePointAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'project_name',
+        'chainage_km',
+        'chainage_meters',
+        'latitude',
+        'longitude',
+    )
+    list_filter = ('project_name',)
+    search_fields = ('project_name',)
+    ordering = ('project_name', 'chainage_meters')

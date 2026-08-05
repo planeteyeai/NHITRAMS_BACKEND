@@ -98,6 +98,63 @@ class InventoryReportReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class AutoFetchChainageRequestSerializer(serializers.Serializer):
+    """Validate GPS input for nearest-chainage lookup.
+
+    Accepts project_name (preferred). For one release cycle also accepts
+    legacy road_name as a fallback alias. Responses never expose road_name.
+    """
+
+    latitude = serializers.FloatField()
+    longitude = serializers.FloatField()
+    project_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        max_length=255,
+    )
+    # Deprecated alias — remove after one release cycle.
+    road_name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        max_length=255,
+    )
+
+    def validate_latitude(self, value):
+        if value < -90 or value > 90:
+            raise serializers.ValidationError('Latitude must be between -90 and 90.')
+        return value
+
+    def validate_longitude(self, value):
+        if value < -180 or value > 180:
+            raise serializers.ValidationError('Longitude must be between -180 and 180.')
+        return value
+
+    def validate(self, attrs):
+        project = attrs.get('project_name')
+        road = attrs.get('road_name')
+        resolved = None
+        if project is not None and str(project).strip():
+            resolved = str(project).strip()
+        elif road is not None and str(road).strip():
+            resolved = str(road).strip()
+        attrs['project_name'] = resolved
+        attrs.pop('road_name', None)
+        return attrs
+
+
+class AutoFetchChainageResponseSerializer(serializers.Serializer):
+    """Documents the autofetch-chainage response payload."""
+
+    project_name = serializers.CharField()
+    chainage_display = serializers.CharField()
+    chainage_meters = serializers.FloatField()
+    distance_from_road_meters = serializers.FloatField()
+    nearest_latitude = serializers.FloatField()
+    nearest_longitude = serializers.FloatField()
+
+
 class InventoryFilterSerializer(serializers.Serializer):
     chainage_start = serializers.FloatField()
     chainage_end = serializers.FloatField()

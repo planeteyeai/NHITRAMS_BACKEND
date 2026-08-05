@@ -12,6 +12,7 @@ from .serializers import (
     InventoryResponseSerializer,
     DPRReportWriteSerializer,
     DPRReportReadSerializer,
+    AutoFetchChainageRequestSerializer,
     resolve_dpr_uploaded_images,
 )
 from .serializers_inventory_report import (
@@ -28,6 +29,7 @@ from .services.inventory_report import (
     list_inventory_reports,
     update_inventory_report,
 )
+from .services.chainage_lookup import find_nearest_chainage
 from .utils import apply_media_uploads_to_payload, upload_dpr_images
 from django.db import connection, transaction
 from datetime import datetime
@@ -984,3 +986,105 @@ class DPRReportHistoryView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class AutoFetchChainageView(APIView):
+    """POST/GET /api/inventory/autofetch-chainage/ — nearest chainage from GPS."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Return the nearest road chainage for a GPS coordinate using '
+            'KML-imported reference points. Optional project_name filters to one project. '
+            'Legacy road_name is accepted for one release cycle.'
+        ),
+        request_body=AutoFetchChainageRequestSerializer,
+        responses={
+            200: openapi.Response('Nearest chainage'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            404: 'No nearby reference points',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def post(self, request):
+        return self._lookup(request.data)
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Return the nearest road chainage for a GPS coordinate '
+            '(query params: latitude, longitude, optional project_name; '
+            'legacy road_name also accepted).'
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                'latitude',
+                openapi.IN_QUERY,
+                type=openapi.TYPE_NUMBER,
+                required=True,
+            ),
+            openapi.Parameter(
+                'longitude',
+                openapi.IN_QUERY,
+                type=openapi.TYPE_NUMBER,
+                required=True,
+            ),
+            openapi.Parameter(
+                'project_name',
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            openapi.Parameter(
+                'road_name',
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description='Deprecated alias for project_name',
+            ),
+        ],
+        responses={
+            200: openapi.Response('Nearest chainage'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            404: 'No nearby reference points',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def get(self, request):
+        return self._lookup(request.query_params)
+
+    def _lookup(self, raw):
+        serializer = AutoFetchChainageRequestSerializer(data=raw)
+        if not serializer.is_valid():
+            return Response(
+                {'success': False, 'errors': serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = serializer.validated_data
+        try:
+            result = find_nearest_chainage(
+                data['latitude'],
+                data['longitude'],
+                project_name=data.get('project_name'),
+            )
+        except NotFound as exc:
+            return Response(
+                {'success': False, 'message': str(exc.detail)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValidationError as exc:
+            return Response(
+                {
+                    'success': False,
+                    'errors': exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({'success': True, 'data': result}, status=status.HTTP_200_OK)
