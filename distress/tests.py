@@ -1,5 +1,7 @@
 """Tests for PostgreSQL-backed distress report APIs (Excel replacement)."""
 
+from unittest.mock import patch
+
 from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -81,6 +83,77 @@ class AppendDistressReportedExcelTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_put_updates_owned_report_via_append_url(self):
+        report = DistressReport.objects.create(username='ram.patil', **SAMPLE_PAYLOAD)
+        payload = {
+            **SAMPLE_PAYLOAD,
+            'id': report.id,
+            'Distress_Type': 'Crack',
+            'username': 'attacker',
+        }
+        response = self.client.put(
+            '/append_distressReported_excel/',
+            payload,
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['message'], 'Data updated successfully')
+        self.assertEqual(response.data['data']['Distress_Type'], 'Crack')
+        report.refresh_from_db()
+        self.assertEqual(report.Distress_Type, 'Crack')
+        self.assertEqual(report.username, 'ram.patil')
+
+    def test_patch_updates_partial_fields_via_append_url(self):
+        report = DistressReport.objects.create(username='ram.patil', **SAMPLE_PAYLOAD)
+        response = self.client.patch(
+            '/append_distressReported_excel/',
+            {'id': report.id, 'Lane': 'L2'},
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(report.Lane, 'L2')
+        self.assertEqual(report.Distress_Type, 'Pothole')
+
+    def test_patch_requires_id(self):
+        response = self.client.patch(
+            '/append_distressReported_excel/',
+            {'Lane': 'L2'},
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('id', response.data)
+
+    @patch(
+        'inventory.utils.upload_file_to_s3',
+        return_value='https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged%20Assets/distress.jpg',
+    )
+    def test_patch_uploads_image_file(self, mock_upload):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        report = DistressReport.objects.create(username='ram.patil', **SAMPLE_PAYLOAD)
+        response = self.client.patch(
+            '/append_distressReported_excel/',
+            {
+                'id': report.id,
+                'image': SimpleUploadedFile(
+                    'photo.jpg', b'img', content_type='image/jpeg'
+                ),
+            },
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(
+            report.Image_URL,
+            'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged%20Assets/distress.jpg',
+        )
+        mock_upload.assert_called_once()
+
 
 @override_settings(JWT_SECRET_KEY='test-jwt-secret')
 class DistressReportCRUDTests(TestCase):
@@ -132,3 +205,26 @@ class DistressReportCRUDTests(TestCase):
     def test_missing_report_returns_404(self):
         response = self.client.get('/distress/99999/', **self.auth)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_put_via_detail_url(self):
+        report = self._create()
+        payload = {**SAMPLE_PAYLOAD, 'Distress_Type': 'Rutting'}
+        response = self.client.put(
+            f'/distress/{report.id}/',
+            payload,
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(report.Distress_Type, 'Rutting')
+
+    def test_patch_other_users_report_returns_403(self):
+        report = self._create(username='other.user')
+        response = self.client.patch(
+            f'/distress/{report.id}/',
+            {'Lane': 'hack'},
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

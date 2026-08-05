@@ -49,8 +49,15 @@ class InventoryReportWriteSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, data):
-        chainage_start = data.get('Chainage_start')
-        chainage_end = data.get('Chainage_end')
+        instance = getattr(self, 'instance', None)
+        chainage_start = data.get(
+            'Chainage_start',
+            getattr(instance, 'Chainage_start', None) if instance is not None else None,
+        )
+        chainage_end = data.get(
+            'Chainage_end',
+            getattr(instance, 'Chainage_end', None) if instance is not None else None,
+        )
         if (
             chainage_start is not None
             and chainage_end is not None

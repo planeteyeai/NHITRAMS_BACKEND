@@ -47,8 +47,15 @@ class DistressReportWriteSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, data):
-        chainage_start = data.get('Chainage_Start')
-        chainage_end = data.get('Chainage_End')
+        instance = getattr(self, 'instance', None)
+        chainage_start = data.get(
+            'Chainage_Start',
+            getattr(instance, 'Chainage_Start', None) if instance is not None else None,
+        )
+        chainage_end = data.get(
+            'Chainage_End',
+            getattr(instance, 'Chainage_End', None) if instance is not None else None,
+        )
         if (
             chainage_start is not None
             and chainage_end is not None

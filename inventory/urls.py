@@ -7,6 +7,7 @@ from .views import (
     InventoryReportHistoryView,
     InventoryReportDetailView,
     InventoryPDFExportView,
+    InventoryMasterView,
     DPRReportCreateView,
     DPRReportDetailView,
     DPRReportHistoryView,
@@ -33,6 +34,10 @@ urlpatterns = [
     path('inventory/history/', InventoryReportHistoryView.as_view(), name='inventory-report-history'),
     path('inventory/export/pdf/', InventoryPDFExportView.as_view(), name='inventory-export-pdf'),
     path('inventory/<int:report_id>/', InventoryReportDetailView.as_view(), name='inventory-report-detail'),
+
+    # Inventory master dropdowns (JWT-protected)
+    path('api/inventory/master', InventoryMasterView.as_view(), name='inventory-master'),
+    path('api/inventory/master/', InventoryMasterView.as_view(), name='inventory-master-slash'),
 
     # Daily Progress Report (JWT-protected)
     path('api/inventory/dpr/report', DPRReportCreateView.as_view(), name='inventory-dpr-report'),

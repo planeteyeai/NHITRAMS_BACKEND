@@ -239,6 +239,9 @@ AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'ap-south-1')
 AWS_S3_DPR_FOLDER = os.environ.get('AWS_S3_DPR_FOLDER', 'Damaged Assets')
 AWS_DEFAULT_ACL = os.environ.get('AWS_DEFAULT_ACL', '') or None
 AWS_S3_MAX_UPLOAD_BYTES = int(os.environ.get('AWS_S3_MAX_UPLOAD_BYTES', str(10 * 1024 * 1024)))
+AWS_S3_MAX_VIDEO_UPLOAD_BYTES = int(
+    os.environ.get('AWS_S3_MAX_VIDEO_UPLOAD_BYTES', str(100 * 1024 * 1024))
+)
 
 SWAGGER_SETTINGS = {
     'SECURITY_DEFINITIONS': {

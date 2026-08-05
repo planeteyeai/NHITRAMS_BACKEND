@@ -40,10 +40,14 @@ class RoutineMaintenanceAPITests(TestCase):
         self.auth = {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
         self.other_auth = {'HTTP_AUTHORIZATION': f'Bearer {self.other_token}'}
 
-        self.category = RoutineMaintenanceCategory.objects.get(name='Median Maintenance')
-        self.subcategory = RoutineMaintenanceSubcategory.objects.filter(
-            category=self.category
-        ).first()
+        self.category = RoutineMaintenanceCategory.objects.get(
+            name='Median Maintenance', is_active=True
+        )
+        self.subcategory = RoutineMaintenanceSubcategory.objects.get(
+            category=self.category,
+            name='Trimming, Pruning of Median plants',
+            is_active=True,
+        )
         self.side = SideMaster.objects.get(name='LHS L1')
         self.severity = SeverityMaster.objects.get(name='Low')
 
@@ -76,6 +80,11 @@ class RoutineMaintenanceAPITests(TestCase):
         return_value=[SAMPLE_PROJECT_NAME],
     )
     def test_master_returns_nested_dropdowns(self, _mock_projects):
+        from inventory.seed_routine_maintenance_masters import (
+            RM_CATEGORY_SEED,
+            RM_SUBCATEGORY_SEED,
+        )
+
         response = self.client.get('/api/inventory/routine-maintenance/master', **self.auth)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['success'])
@@ -86,9 +95,20 @@ class RoutineMaintenanceAPITests(TestCase):
         self.assertIn('severity_master', data)
         self.assertEqual(data['projects'][0]['project_name'], 'Abu Road to Swaroopganj')
         self.assertNotIn('id', data['projects'][0])
-        self.assertTrue(any(c['name'] == 'Median Maintenance' for c in data['categories']))
-        median = next(c for c in data['categories'] if c['name'] == 'Median Maintenance')
-        self.assertTrue(median['subcategories'])
+
+        # Exact Annexure-I category/subcategory names (including long labels).
+        expected_categories = [name for _, name in RM_CATEGORY_SEED]
+        actual_categories = [c['name'] for c in data['categories']]
+        self.assertEqual(actual_categories, expected_categories)
+        for category in data['categories']:
+            expected_subs = RM_SUBCATEGORY_SEED[category['name']]
+            actual_subs = [s['name'] for s in category['subcategories']]
+            self.assertEqual(actual_subs, expected_subs)
+        self.assertEqual(
+            sum(len(c['subcategories']) for c in data['categories']),
+            sum(len(v) for v in RM_SUBCATEGORY_SEED.values()),
+        )
+
         self.assertTrue(any(s['name'] == 'LHS L1' for s in data['side_master']))
         self.assertTrue(any(s['name'] == 'Low' for s in data['severity_master']))
 

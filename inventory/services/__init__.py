@@ -9,6 +9,12 @@ from .routine_maintenance import (
     resolve_project_details,
     update_routine_maintenance_report,
 )
+from .inventory_report import (
+    create_inventory_report,
+    get_inventory_master,
+    list_inventory_reports,
+    update_inventory_report,
+)
 
 __all__ = [
     'ProjectDetailsNotFound',
@@ -19,4 +25,8 @@ __all__ = [
     'create_routine_maintenance_report',
     'list_routine_maintenance_reports',
     'update_routine_maintenance_report',
+    'get_inventory_master',
+    'create_inventory_report',
+    'update_inventory_report',
+    'list_inventory_reports',
 ]

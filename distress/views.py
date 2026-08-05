@@ -2,8 +2,9 @@ import logging
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from django.db.models import Sum, Avg, Q, Min, Max
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from .models import Distress, Project, DistressType, DistressReport
@@ -17,6 +18,7 @@ from .serializers import (
 from .authentication import JWTAuthentication
 from .permissions import IsJWTAuthenticated
 from inventory.models import Inventory
+from inventory.utils import apply_media_uploads_to_payload
 from collections import defaultdict
 from rest_framework.decorators import api_view
 
@@ -524,21 +526,89 @@ def _get_owned_distress_report(request, report_id: int) -> DistressReport:
     return report
 
 
+def _extract_report_id(data) -> int | None:
+    """Accept `id` or `report_id` from a request body."""
+    raw = None
+    if hasattr(data, 'get'):
+        raw = data.get('id', data.get('report_id'))
+    if raw is None or raw == '':
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mutable_request_data(request) -> dict:
+    """Copy request.data into a plain mutable dict (works for JSON and multipart)."""
+    data = request.data
+    if hasattr(data, 'dict'):
+        return {key: data.get(key) for key in data.keys()}
+    if hasattr(data, 'copy'):
+        copied = data.copy()
+        return dict(copied) if not isinstance(copied, dict) else copied
+    return dict(data)
+
+
+def _update_distress_report(request, report, *, partial: bool):
+    """Apply PUT/PATCH updates. Username remains JWT-owned."""
+    mutable = _mutable_request_data(request)
+    mutable.pop('id', None)
+    mutable.pop('report_id', None)
+    mutable.pop('username', None)
+
+    try:
+        apply_media_uploads_to_payload(request, mutable, allow_video=False)
+    except ValidationError as exc:
+        return Response(
+            exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except RuntimeError as exc:
+        logger.exception('Distress report media upload failed')
+        return Response(
+            {'message': str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    serializer = DistressReportWriteSerializer(
+        report,
+        data=mutable,
+        partial=partial,
+    )
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    serializer.save()  # username never accepted from client
+    report.refresh_from_db()
+    return Response(
+        {
+            'message': 'Data updated successfully',
+            'data': DistressReportReadSerializer(report).data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 class AppendDistressReportedExcelView(APIView):
-    """POST /append_distressReported_excel/
+    """POST / PUT / PATCH /append_distressReported_excel/
 
     Backward-compatible replacement for the legacy Excel append API.
     Same URL, same request body field names — stores in PostgreSQL instead.
+    PUT/PATCH require `id` (or `report_id`) in the body.
+    Supports multipart image uploads (`image` / `images`) to S3.
     """
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsJWTAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     @swagger_auto_schema(
         operation_description=(
             'Append a distress report. Replaces Excel storage with PostgreSQL. '
             'Request body field names are unchanged for frontend compatibility. '
-            'Username is taken from the JWT.'
+            'Username is taken from the JWT. '
+            'Optional multipart file: `image`/`images` (uploaded to S3; stored as Image_URL).'
         ),
         request_body=DistressReportWriteSerializer,
         responses={
@@ -552,12 +622,29 @@ class AppendDistressReportedExcelView(APIView):
             ),
             400: 'Validation error',
             401: 'Unauthorized — missing or invalid JWT',
+            500: 'Upload failure',
         },
         security=[{'Bearer': []}],
         tags=['Distress Reports'],
     )
     def post(self, request):
-        serializer = DistressReportWriteSerializer(data=request.data)
+        mutable = _mutable_request_data(request)
+        mutable.pop('username', None)
+        try:
+            apply_media_uploads_to_payload(request, mutable, allow_video=False)
+        except ValidationError as exc:
+            return Response(
+                exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except RuntimeError as exc:
+            logger.exception('Distress report media upload failed')
+            return Response(
+                {'message': str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        serializer = DistressReportWriteSerializer(data=mutable)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -568,6 +655,58 @@ class AppendDistressReportedExcelView(APIView):
             {'message': 'Data appended successfully'},
             status=status.HTTP_200_OK,
         )
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Full update of an owned distress report. '
+            'Send `id` (or `report_id`) plus all required report fields. '
+            'Optional multipart `image`/`images` replaces Image_URL. '
+            'Username is taken from the JWT and cannot be changed.'
+        ),
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+            500: 'Upload failure',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def put(self, request):
+        return self._update(request, partial=False)
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Partial update of an owned distress report. '
+            'Send `id` (or `report_id`) plus only the fields to change. '
+            'Optional multipart `image`/`images` replaces Image_URL. '
+            'Username is taken from the JWT and cannot be changed.'
+        ),
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+            500: 'Upload failure',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def patch(self, request):
+        return self._update(request, partial=True)
+
+    def _update(self, request, *, partial: bool):
+        report_id = _extract_report_id(request.data)
+        if report_id is None:
+            return Response(
+                {'id': ['This field is required.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        report = _get_owned_distress_report(request, report_id)
+        return _update_distress_report(request, report, partial=partial)
 
 
 class DistressReportHistoryView(APIView):
@@ -593,10 +732,11 @@ class DistressReportHistoryView(APIView):
 
 
 class DistressReportDetailView(APIView):
-    """GET / DELETE /distress/{id}/ — retrieve or delete an owned report."""
+    """GET / PUT / PATCH / DELETE /distress/{id}/ — retrieve, update, or delete an owned report."""
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsJWTAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     @swagger_auto_schema(
         operation_description='Retrieve a single distress report. Returns 403 if owned by another user.',
@@ -612,6 +752,46 @@ class DistressReportDetailView(APIView):
     def get(self, request, report_id):
         report = _get_owned_distress_report(request, report_id)
         return Response(DistressReportReadSerializer(report).data)
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Full update of an owned distress report (PUT). '
+            'Username is immutable and taken from the JWT.'
+        ),
+        request_body=DistressReportWriteSerializer,
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def put(self, request, report_id):
+        report = _get_owned_distress_report(request, report_id)
+        return _update_distress_report(request, report, partial=False)
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Partial update of an owned distress report (PATCH). '
+            'Send only fields to change. Username is immutable.'
+        ),
+        request_body=DistressReportWriteSerializer,
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def patch(self, request, report_id):
+        report = _get_owned_distress_report(request, report_id)
+        return _update_distress_report(request, report, partial=True)
 
     @swagger_auto_schema(
         operation_description='Delete a distress report. Returns 403 if owned by another user.',

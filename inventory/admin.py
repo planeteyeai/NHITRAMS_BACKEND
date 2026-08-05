@@ -9,6 +9,8 @@ from .models import (
     Project,
     RoadSegment,
     InventoryReport,
+    InventoryCategory,
+    InventorySubcategory,
     UserProjectAssignment,
     DPRReport,
     RoutineMaintenanceCategory,
@@ -285,6 +287,22 @@ class InventoryReportAdmin(admin.ModelAdmin):
     search_fields = ('username', 'Project_Name', 'Asset_type', 'Image_URL', 'Video_URL')
     readonly_fields = ('created_at', 'updated_at')
     ordering = ('-created_at',)
+
+
+@admin.register(InventoryCategory)
+class InventoryCategoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'display_order', 'is_active', 'updated_at')
+    list_filter = ('is_active',)
+    search_fields = ('name',)
+    ordering = ('display_order', 'name')
+
+
+@admin.register(InventorySubcategory)
+class InventorySubcategoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'category', 'name', 'display_order', 'is_active', 'updated_at')
+    list_filter = ('is_active', 'category')
+    search_fields = ('name', 'category__name')
+    ordering = ('category__display_order', 'display_order', 'name')
 
 
 @admin.register(UserProjectAssignment)

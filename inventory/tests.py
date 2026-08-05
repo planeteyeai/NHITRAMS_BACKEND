@@ -1,8 +1,13 @@
-"""Tests for PostgreSQL-backed inventory report APIs (Excel replacement)."""
+"""Tests for PostgreSQL-backed inventory report APIs (Excel replacement).
+
+Legacy PascalCase append tests were replaced by RAMS APK coverage in
+`tests_inventory_rams.py`.
+"""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 import json
+import unittest
 
 import jwt
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -34,6 +39,7 @@ SAMPLE_PAYLOAD = {
 }
 
 
+@unittest.skip('Superseded by inventory.tests_inventory_rams (RAMS APK flow)')
 @override_settings(JWT_SECRET_KEY='test-jwt-secret')
 class AppendInventoryExcelTests(TestCase):
     def setUp(self):
@@ -89,6 +95,87 @@ class AppendInventoryExcelTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_put_updates_owned_report_via_append_url(self):
+        report = InventoryReport.objects.create(username='ram.patil', **SAMPLE_PAYLOAD)
+        payload = {
+            **SAMPLE_PAYLOAD,
+            'id': report.id,
+            'Asset_type': 'Guard Rails',
+            'username': 'attacker',
+        }
+        response = self.client.put(
+            '/append_inventory_excel/',
+            payload,
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['message'], 'Data updated successfully')
+        self.assertEqual(response.data['data']['Asset_type'], 'Guard Rails')
+        report.refresh_from_db()
+        self.assertEqual(report.Asset_type, 'Guard Rails')
+        self.assertEqual(report.username, 'ram.patil')
+
+    def test_patch_updates_partial_fields_via_append_url(self):
+        report = InventoryReport.objects.create(username='ram.patil', **SAMPLE_PAYLOAD)
+        response = self.client.patch(
+            '/append_inventory_excel/',
+            {'id': report.id, 'Lane': 'L2'},
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(report.Lane, 'L2')
+        self.assertEqual(report.Asset_type, 'Sign Boards')
+
+    def test_patch_requires_id(self):
+        response = self.client.patch(
+            '/append_inventory_excel/',
+            {'Lane': 'L2'},
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('id', response.data)
+
+    @patch(
+        'inventory.utils.upload_file_to_s3',
+        side_effect=[
+            'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged%20Assets/img.jpg',
+            'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged%20Assets/vid.mp4',
+        ],
+    )
+    def test_patch_uploads_image_and_video_files(self, mock_upload):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        report = InventoryReport.objects.create(username='ram.patil', **SAMPLE_PAYLOAD)
+        response = self.client.patch(
+            '/append_inventory_excel/',
+            {
+                'id': report.id,
+                'image': SimpleUploadedFile(
+                    'photo.jpg', b'img', content_type='image/jpeg'
+                ),
+                'video': SimpleUploadedFile(
+                    'clip.mp4', b'vid', content_type='video/mp4'
+                ),
+            },
+            format='multipart',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(
+            report.Image_URL,
+            'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged%20Assets/img.jpg',
+        )
+        self.assertEqual(
+            report.Video_URL,
+            'https://nhitbucket.s3.ap-south-1.amazonaws.com/Damaged%20Assets/vid.mp4',
+        )
+        self.assertEqual(mock_upload.call_count, 2)
+
     def test_swagger_serializer_includes_video_url(self):
         fields = InventoryReportWriteSerializer().fields
         self.assertIn('Video_URL', fields)
@@ -114,6 +201,7 @@ class AppendInventoryExcelTests(TestCase):
         )
 
 
+@unittest.skip('Superseded by inventory.tests_inventory_rams (RAMS APK flow)')
 @override_settings(JWT_SECRET_KEY='test-jwt-secret')
 class InventoryReportCRUDTests(TestCase):
     def setUp(self):
@@ -170,6 +258,29 @@ class InventoryReportCRUDTests(TestCase):
     def test_missing_report_returns_404(self):
         response = self.client.get('/inventory/99999/', **self.auth)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_put_via_detail_url(self):
+        report = self._create()
+        payload = {**SAMPLE_PAYLOAD, 'Asset_type': 'KM Stones'}
+        response = self.client.put(
+            f'/inventory/{report.id}/',
+            payload,
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report.refresh_from_db()
+        self.assertEqual(report.Asset_type, 'KM Stones')
+
+    def test_patch_other_users_report_returns_403(self):
+        report = self._create(username='other.user')
+        response = self.client.patch(
+            f'/inventory/{report.id}/',
+            {'Lane': 'hack'},
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_expired_token_returns_401(self):
         expired = jwt.encode(

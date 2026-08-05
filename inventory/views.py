@@ -10,16 +10,25 @@ from .models import DPRReport, InventoryWide, InventoryReport
 from .serializers import (
     InventoryFilterSerializer,
     InventoryResponseSerializer,
-    InventoryReportWriteSerializer,
-    InventoryReportReadSerializer,
     DPRReportWriteSerializer,
     DPRReportReadSerializer,
     resolve_dpr_uploaded_images,
 )
+from .serializers_inventory_report import (
+    InventoryReportWriteSerializer as InventoryRamsWriteSerializer,
+    InventoryReportReadSerializer as InventoryRamsReadSerializer,
+)
 from .authentication import JWTAuthentication
 from .permissions import IsJWTAuthenticated
 from .services import ProjectDetailsNotFound, get_project_details
-from .utils import upload_dpr_images
+from .services.inventory_report import (
+    create_inventory_report,
+    get_inventory_master,
+    get_owned_inventory_report,
+    list_inventory_reports,
+    update_inventory_report,
+)
+from .utils import apply_media_uploads_to_payload, upload_dpr_images
 from django.db import connection, transaction
 from datetime import datetime
 
@@ -186,6 +195,84 @@ def _get_owned_inventory_report(request, report_id: int) -> InventoryReport:
     return report
 
 
+def _extract_report_id(data) -> int | None:
+    """Accept `id` or `report_id` from a request body."""
+    raw = None
+    if hasattr(data, 'get'):
+        raw = data.get('id', data.get('report_id'))
+    if raw is None or raw == '':
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mutable_request_data(request) -> dict:
+    """Copy request.data into a plain mutable dict (works for JSON and multipart)."""
+    data = request.data
+    if hasattr(data, 'dict'):
+        # QueryDict: keep only the last value per key for scalar fields.
+        return {key: data.get(key) for key in data.keys()}
+    if hasattr(data, 'copy'):
+        copied = data.copy()
+        return dict(copied) if not isinstance(copied, dict) else copied
+    return dict(data)
+
+
+def _update_inventory_report_view(request, report, *, partial: bool):
+    """Apply PUT/PATCH with optional media uploads. Username remains JWT-owned."""
+    mutable = _mutable_request_data(request)
+    mutable.pop('id', None)
+    mutable.pop('report_id', None)
+    mutable.pop('username', None)
+    # Project details are immutable after create.
+    mutable.pop('project_name', None)
+    mutable.pop('project_id', None)
+    mutable.pop('start_chainage', None)
+    mutable.pop('end_chainage', None)
+    mutable.pop('total_project_length', None)
+
+    try:
+        apply_media_uploads_to_payload(request, mutable, allow_video=True)
+    except ValidationError as exc:
+        return Response(
+            {'success': False, 'errors': exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except RuntimeError as exc:
+        logger.exception('Inventory report media upload failed')
+        return Response(
+            {'success': False, 'message': str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    serializer = InventoryRamsWriteSerializer(
+        report,
+        data=mutable,
+        partial=partial,
+    )
+    if not serializer.is_valid():
+        return Response(
+            {'success': False, 'errors': serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    report = update_inventory_report(
+        report=report,
+        validated=serializer.validated_data,
+        partial=partial,
+    )
+    return Response(
+        {
+            'success': True,
+            'message': 'Data updated successfully',
+            'data': InventoryRamsReadSerializer(report).data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 def _get_owned_dpr_report(request, report_id: int) -> DPRReport:
     """Fetch a DPR report and enforce ownership (404 / 403)."""
     try:
@@ -213,49 +300,145 @@ def _dpr_report_response_data(report: DPRReport) -> dict:
         'updated_at': report.updated_at.isoformat(),
     }
 
-class AppendInventoryExcelView(APIView):
-    """POST /append_inventory_excel/
-
-    Backward-compatible replacement for the legacy Excel append API.
-    Same URL, same request body field names — stores in PostgreSQL instead.
-    """
+class InventoryMasterView(APIView):
+    """GET /api/inventory/master — inventory dropdown masters."""
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsJWTAuthenticated]
 
     @swagger_auto_schema(
         operation_description=(
-            'Append an inventory report. Replaces Excel storage with PostgreSQL. '
-            'Request body field names are unchanged for frontend compatibility. '
-            'Username is taken from the JWT. Includes Video_URL.'
+            'Return projects, inventory categories/subcategories, side and severity masters.'
         ),
-        request_body=InventoryReportWriteSerializer,
+        responses={200: openapi.Response('Master data'), 401: 'Unauthorized'},
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def get(self, request):
+        return Response(
+            {'success': True, 'data': get_inventory_master()},
+            status=status.HTTP_200_OK,
+        )
+
+
+class AppendInventoryExcelView(APIView):
+    """POST / PUT / PATCH /append_inventory_excel/
+
+    RAMS APK inventory report create/update.
+    PUT/PATCH require `id` (or `report_id`) in the body.
+    Reuses existing S3 image/video upload helpers.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Create an inventory report (RAMS APK flow). '
+            'Send project_name, inventory_category_id, inventory_subcategory_id, '
+            'side_id, severity_id, GPS, chainage, dimensions. '
+            'Optional multipart `image`/`images` and `video`/`videos`. '
+            'Username is taken from the JWT.'
+        ),
+        request_body=InventoryRamsWriteSerializer,
         responses={
-            200: openapi.Response(
-                description='Success (legacy-compatible)',
-                examples={
-                    'application/json': {
-                        'message': 'Data appended successfully',
-                    }
-                },
-            ),
+            200: openapi.Response('Created'),
             400: 'Validation error',
             401: 'Unauthorized — missing or invalid JWT',
+            500: 'Upload failure',
         },
         security=[{'Bearer': []}],
         tags=['Inventory Reports'],
     )
     def post(self, request):
-        serializer = InventoryReportWriteSerializer(data=request.data)
+        mutable = _mutable_request_data(request)
+        mutable.pop('username', None)
+        try:
+            apply_media_uploads_to_payload(request, mutable, allow_video=True)
+        except ValidationError as exc:
+            return Response(
+                {
+                    'success': False,
+                    'errors': exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except RuntimeError as exc:
+            logger.exception('Inventory report media upload failed')
+            return Response(
+                {'success': False, 'message': str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        serializer = InventoryRamsWriteSerializer(data=mutable)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'success': False, 'errors': serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        serializer.save(username=_jwt_username(request))
-
+        report = create_inventory_report(
+            username=_jwt_username(request),
+            validated=serializer.validated_data,
+        )
         return Response(
-            {'message': 'Data appended successfully'},
+            {
+                'success': True,
+                'message': 'Data appended successfully',
+                'data': InventoryRamsReadSerializer(report).data,
+            },
             status=status.HTTP_200_OK,
         )
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Full update of an owned inventory report. '
+            'Send `id` plus fields to replace. Project details and username are immutable. '
+            'Optional multipart image/video uploads.'
+        ),
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+            500: 'Upload failure',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def put(self, request):
+        return self._update(request, partial=False)
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Partial update of an owned inventory report. '
+            'Send `id` plus only fields to change. Project details and username are immutable.'
+        ),
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+            500: 'Upload failure',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def patch(self, request):
+        return self._update(request, partial=True)
+
+    def _update(self, request, *, partial: bool):
+        report_id = _extract_report_id(request.data)
+        if report_id is None:
+            return Response(
+                {'success': False, 'errors': {'id': ['This field is required.']}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        report = _get_owned_inventory_report(request, report_id)
+        return _update_inventory_report_view(request, report, partial=partial)
 
 
 class InventoryReportHistoryView(APIView):
@@ -267,29 +450,33 @@ class InventoryReportHistoryView(APIView):
     @swagger_auto_schema(
         operation_description='Return inventory reports belonging to the authenticated user, newest first.',
         responses={
-            200: InventoryReportReadSerializer(many=True),
+            200: InventoryRamsReadSerializer(many=True),
             401: 'Unauthorized',
         },
         security=[{'Bearer': []}],
         tags=['Inventory Reports'],
     )
     def get(self, request):
-        reports = InventoryReport.objects.filter(
-            username=_jwt_username(request)
-        ).order_by('-created_at')
-        return Response(InventoryReportReadSerializer(reports, many=True).data)
+        reports = list_inventory_reports(_jwt_username(request))
+        return Response(
+            {
+                'success': True,
+                'data': InventoryRamsReadSerializer(reports, many=True).data,
+            }
+        )
 
 
 class InventoryReportDetailView(APIView):
-    """GET / DELETE /inventory/{id}/ — retrieve or delete an owned report."""
+    """GET / PUT / PATCH / DELETE /inventory/{id}/ — retrieve, update, or delete an owned report."""
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsJWTAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     @swagger_auto_schema(
         operation_description='Retrieve a single inventory report. Returns 403 if owned by another user.',
         responses={
-            200: InventoryReportReadSerializer,
+            200: InventoryRamsReadSerializer,
             401: 'Unauthorized',
             403: 'Forbidden',
             404: 'Not Found',
@@ -299,7 +486,49 @@ class InventoryReportDetailView(APIView):
     )
     def get(self, request, report_id):
         report = _get_owned_inventory_report(request, report_id)
-        return Response(InventoryReportReadSerializer(report).data)
+        return Response(
+            {'success': True, 'data': InventoryRamsReadSerializer(report).data}
+        )
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Full update of an owned inventory report (PUT). '
+            'Username and project details are immutable.'
+        ),
+        request_body=InventoryRamsWriteSerializer,
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def put(self, request, report_id):
+        report = _get_owned_inventory_report(request, report_id)
+        return _update_inventory_report_view(request, report, partial=False)
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Partial update of an owned inventory report (PATCH). '
+            'Send only fields to change. Username and project details are immutable.'
+        ),
+        request_body=InventoryRamsWriteSerializer,
+        responses={
+            200: openapi.Response('Updated'),
+            400: 'Validation error',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Not Found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Inventory Reports'],
+    )
+    def patch(self, request, report_id):
+        report = _get_owned_inventory_report(request, report_id)
+        return _update_inventory_report_view(request, report, partial=True)
 
     @swagger_auto_schema(
         operation_description='Delete an inventory report. Returns 403 if owned by another user.',

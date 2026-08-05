@@ -138,20 +138,71 @@ class InventoryWide(models.Model):
 class InventoryReport(models.Model):
     """User-submitted inventory report formerly stored in Excel.
 
-    Field names intentionally match the legacy frontend JSON contract.
+    New RAMS APK flow uses category/subcategory/side/severity FKs and project
+    snapshot fields (mirrors Routine Maintenance). Legacy PascalCase columns are
+    retained and synced for PDF / older clients.
     Username is always set from the JWT, never the body.
     """
 
     id = models.BigAutoField(primary_key=True)
     username = models.CharField(max_length=150, db_index=True)
-    Project_Name = models.CharField(max_length=255)
-    Chainage_start = models.FloatField()
-    Chainage_end = models.FloatField()
-    Direction = models.CharField(max_length=100)
-    Asset_type = models.CharField(max_length=255)
-    Latitude = models.FloatField()
-    Longitude = models.FloatField()
-    Date = models.CharField(max_length=50)
+
+    # Project snapshot (resolved from project_name; not client-trusted)
+    project_id = models.IntegerField(null=True, blank=True, db_index=True)
+    project_name = models.CharField(max_length=255, blank=True, default='')
+    start_chainage = models.CharField(max_length=100, blank=True, default='')
+    end_chainage = models.CharField(max_length=100, blank=True, default='')
+    total_project_length = models.CharField(max_length=100, blank=True, default='')
+
+    inventory_category = models.ForeignKey(
+        'InventoryCategory',
+        on_delete=models.PROTECT,
+        related_name='reports',
+        null=True,
+        blank=True,
+    )
+    inventory_subcategory = models.ForeignKey(
+        'InventorySubcategory',
+        on_delete=models.PROTECT,
+        related_name='reports',
+        null=True,
+        blank=True,
+    )
+    side = models.ForeignKey(
+        'SideMaster',
+        on_delete=models.PROTECT,
+        related_name='inventory_reports',
+        null=True,
+        blank=True,
+    )
+    severity = models.ForeignKey(
+        'SeverityMaster',
+        on_delete=models.PROTECT,
+        related_name='inventory_reports',
+        null=True,
+        blank=True,
+    )
+
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+    chainage = models.CharField(max_length=100, blank=True, default='')
+    inspection_datetime = models.DateTimeField(null=True, blank=True)
+    description_of_work = models.TextField(blank=True, default='')
+    nos = models.FloatField(default=0)
+    length = models.FloatField(default=0)
+    width = models.FloatField(default=0)
+    depth = models.FloatField(default=0)
+    total_quantity = models.FloatField(default=0)
+
+    # Legacy Excel-compatible columns (kept for PDF / history back-compat)
+    Project_Name = models.CharField(max_length=255, blank=True, default='')
+    Chainage_start = models.FloatField(null=True, blank=True, default=0)
+    Chainage_end = models.FloatField(null=True, blank=True, default=0)
+    Direction = models.CharField(max_length=100, blank=True, default='')
+    Asset_type = models.CharField(max_length=255, blank=True, default='')
+    Latitude = models.FloatField(null=True, blank=True, default=0)
+    Longitude = models.FloatField(null=True, blank=True, default=0)
+    Date = models.CharField(max_length=50, blank=True, default='')
     Sub_Asset_Type = models.CharField(max_length=255, blank=True, default='')
     Carriage_Type = models.CharField(max_length=100, blank=True, default='')
     Lane = models.CharField(max_length=100, blank=True, default='')
@@ -170,7 +221,55 @@ class InventoryReport(models.Model):
         ]
 
     def __str__(self):
-        return f'InventoryReport {self.id} ({self.username}) — {self.Asset_type}'
+        label = self.Asset_type or self.project_name or self.Project_Name or self.id
+        return f'InventoryReport {self.id} ({self.username}) — {label}'
+
+
+class InventoryCategory(models.Model):
+    """Top-level inventory / pavement category from Ref_Inventory Excel."""
+
+    id = models.BigAutoField(primary_key=True)
+    name = models.CharField(max_length=255, unique=True)
+    display_order = models.PositiveIntegerField(default=0, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'inventory_category'
+        ordering = ['display_order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class InventorySubcategory(models.Model):
+    """Sub-asset under an inventory category."""
+
+    id = models.BigAutoField(primary_key=True)
+    category = models.ForeignKey(
+        InventoryCategory,
+        on_delete=models.CASCADE,
+        related_name='subcategories',
+    )
+    name = models.CharField(max_length=255)
+    display_order = models.PositiveIntegerField(default=0, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'inventory_subcategory'
+        ordering = ['display_order', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['category', 'name'],
+                name='inv_subcat_unique_name_per_category',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.category.name} → {self.name}'
 
 
 class UserProjectAssignment(models.Model):
@@ -262,7 +361,8 @@ class RoutineMaintenanceCategory(models.Model):
     """Top-level routine maintenance activity category (DB-driven dropdown)."""
 
     id = models.BigAutoField(primary_key=True)
-    name = models.CharField(max_length=255, unique=True)
+    # Annexure-I category labels can be long; keep Excel text verbatim.
+    name = models.CharField(max_length=500, unique=True)
     display_order = models.PositiveIntegerField(default=0, db_index=True)
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -285,7 +385,8 @@ class RoutineMaintenanceSubcategory(models.Model):
         on_delete=models.CASCADE,
         related_name='subcategories',
     )
-    name = models.CharField(max_length=255)
+    # Annexure-I particulars can be long; keep Excel text verbatim.
+    name = models.CharField(max_length=500)
     display_order = models.PositiveIntegerField(default=0, db_index=True)
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
