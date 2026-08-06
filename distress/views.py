@@ -268,9 +268,44 @@ class DistressFullResponseView(APIView):
     permission_classes = [IsJWTAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Filter distress reports and return full response with all fields",
+        operation_description=(
+            "Filter distress reports and return full response with all fields. "
+            "Use direction/distress_type/project_name value \"All\" to skip that filter."
+        ),
         request_body=DistressFilterSerializer,
-        responses={200: openapi.Response('Success'), 400: 'Bad Request'}
+        responses={
+            200: openapi.Response(
+                description='Success — wrapped list of distress records',
+                examples={
+                    'application/json': [[
+                        {
+                            'distress_id': 73,
+                            'latitude': 24.55851,
+                            'longitude': 72.84584,
+                            'chainage_start': 659.9,
+                            'chainage_end': 660.0,
+                            'project_name': 'Abu Road to Swaroopganj',
+                            'distress_type': 'Pothole',
+                            'direction': 'Increasing',
+                            'total_distress': 1.0,
+                            'pothole': 1.0,
+                            'date': '2025-04-20',
+                            'length': 0.0,
+                            'area': 0.0,
+                            'carriage_type': 'Flexible',
+                            'width': 0.0,
+                            'depth': 0.0,
+                            'lane': 'L1',
+                            'image_url': '',
+                        }
+                    ]]
+                },
+            ),
+            400: 'Bad Request',
+            401: 'Unauthorized',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress'],
     )
     def post(self, request):
         serializer = DistressFilterSerializer(data=request.data)
@@ -283,13 +318,21 @@ class DistressFullResponseView(APIView):
         queryset = Distress.objects.select_related('project', 'distress_type', 'segment')
 
         # Apply filters
-        if 'project_name' in data and data['project_name']:
+        if (
+            'project_name' in data
+            and data['project_name']
+            and not any(p.lower() == 'all' for p in data['project_name'])
+        ):
             q_objects = Q()
             for name in data['project_name']:
                 q_objects |= Q(project__project_name__iexact=name)
             queryset = queryset.filter(q_objects)
 
-        if 'distress_type' in data and data['distress_type']:
+        if (
+            'distress_type' in data
+            and data['distress_type']
+            and not any(dt.lower() == 'all' for dt in data['distress_type'])
+        ):
             q_objects = Q()
             for dtype in data['distress_type']:
                 q_objects |= Q(distress_type__distress_type_name__iexact=dtype)
@@ -306,17 +349,24 @@ class DistressFullResponseView(APIView):
                 chainage_filters &= Q(segment__chainage_start__lte=data['chainage_end'])
             queryset = queryset.filter(chainage_filters)
 
-        if 'direction' in data and data['direction']:
+        if (
+            'direction' in data
+            and data['direction']
+            and not any(d.lower() == 'all' for d in data['direction'])
+        ):
             queryset = queryset.filter(segment__direction__in=data['direction'])
 
-        # List of distress type fields
+        # List of distress type fields (frontend contract keys)
         distress_type_fields = [
             'pothole', 'oblique_crack', 'edge_break', 'patching', 'bleeding', 'hotspots',
             'alligator_crack', 'roughness', 'repair', 'block_crack', 'rutting',
             'longitudinal_crack', 'raveling', 'single_discrete_crack', 'multiple_cracks',
             'joint_crack', 'joint_seal_defects', 'punchout', 'slippage', 'heaves',
             'simple_crack', 'transverse_crack', 'hairline_crack', 'hungry_surface',
-            'settlement', 'shoving', 'stripping'
+            'settlement', 'shoving', 'stripping',
+            'faulting_(stepping)_in_cracks', 'popout_(small_hole)',
+            'single_longitudinal_crack', 'blowup_or_bulking',
+            'polished_surface/_glazing', 'depression',
         ]
 
         final_data = []
@@ -351,6 +401,8 @@ class DistressFullResponseView(APIView):
                 'depth': _json_safe_float(obj.depth_val),
                 'lane': obj.segment.lane or "",
                 'date': str(obj.distress_date) if obj.distress_date else None,
+                # No image column on production ``distress``; keep contract key.
+                'image_url': '',
             }
             # Set distress type specific fields
             for field in distress_type_fields:

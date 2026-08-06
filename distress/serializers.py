@@ -97,26 +97,37 @@ class DistressReportReadSerializer(serializers.ModelSerializer):
 
 
 class DistressFilterSerializer(serializers.Serializer):
+    """Request body for distress_report_filter / distress_predict_filter."""
+
     chainage_start = serializers.FloatField(required=False, min_value=0)
     chainage_end = serializers.FloatField(required=False, min_value=0)
-    date = serializers.DateField(required=False, format='%Y-%m-%d', input_formats=['%Y-%m-%d'])
+    date = serializers.DateField(
+        required=False,
+        format='%Y-%m-%d',
+        input_formats=['%Y-%m-%d'],
+    )
     direction = serializers.ListField(
         child=serializers.CharField(max_length=100),
-        required=False
+        required=False,
+        help_text='Direction values, or ["All"] to skip direction filter.',
     )
     project_name = serializers.ListField(
         child=serializers.CharField(max_length=100),
-        required=False
+        required=False,
+        help_text='Project names, or ["All"] to skip project filter.',
     )
     distress_type = serializers.ListField(
         child=serializers.CharField(max_length=100),
-        required=False
+        required=False,
+        help_text='Distress types, or ["All"] to skip type filter.',
     )
 
     def validate(self, data):
         if 'chainage_start' in data and 'chainage_end' in data:
             if data['chainage_start'] > data['chainage_end']:
-                raise serializers.ValidationError("chainage_start must be less than or equal to chainage_end")
+                raise serializers.ValidationError(
+                    'chainage_start must be less than or equal to chainage_end'
+                )
         return data
 
 class DistressReportSerializer(serializers.Serializer):
