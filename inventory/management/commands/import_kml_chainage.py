@@ -3,10 +3,14 @@
 Example:
   python manage.py import_kml_chainage "inventory/data/kml/Borkhedi to Wadner.kml" \\
       --project-name "Borkhedi to Wadner" --replace
+
+  python manage.py import_kml_chainage "inventory/data/kml/Kothakota-Kurnool.kml" \\
+      --project-name "Kothakota to Kurnool" --replace
 """
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -16,6 +20,9 @@ from django.db import transaction
 from inventory.models import ChainageReferencePoint
 
 BATCH_SIZE = 5000
+
+# "Ch 0+031" / "0+031" / "Ch 75+749" → meters
+_CHAINAGE_PLUS_RE = re.compile(r'(?i)^(?:ch\s*)?(\d+)\+(\d+)$')
 
 
 def _local(tag: str) -> str:
@@ -37,11 +44,33 @@ def _first_child(elem, local_name: str):
     return None
 
 
+def _parse_chainage_meters(raw: str) -> float | None:
+    """Parse placemark name into chainage meters.
+
+    Supports:
+      - plain meters: \"36600.0\" (Borkhedi style)
+      - stationing: \"Ch 0+031\", \"0+031\", \"Ch 75+749\"
+    """
+    text = (raw or '').strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        pass
+    match = _CHAINAGE_PLUS_RE.match(text)
+    if match:
+        km = int(match.group(1))
+        meters_part = int(match.group(2))
+        return float(km * 1000 + meters_part)
+    return None
+
+
 def _parse_placemark(elem):
     """Return (chainage_meters, lat, lng) or None."""
     name_el = _first_child(elem, 'name')
-    chainage_raw = _text(name_el)
-    if not chainage_raw:
+    chainage_meters = _parse_chainage_meters(_text(name_el))
+    if chainage_meters is None:
         return None
 
     lat = None
@@ -72,7 +101,7 @@ def _parse_placemark(elem):
         return None
 
     try:
-        return float(chainage_raw), float(lat), float(lng)
+        return chainage_meters, float(lat), float(lng)
     except (TypeError, ValueError):
         return None
 

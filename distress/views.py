@@ -1,4 +1,5 @@
 import logging
+import math
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -20,11 +21,31 @@ from .permissions import IsJWTAuthenticated
 from inventory.models import Inventory
 from inventory.utils import apply_media_uploads_to_payload
 from collections import defaultdict
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from .services.distress_repair import (
+    quantity_breakdown,
+    resolved_quantities_by_distress_ids,
+)
 
 logger = logging.getLogger(__name__)
 
+
+def _json_safe_float(value, default=0.0):
+    """Coerce DB floats to JSON-safe numbers (NaN/Inf → default)."""
+    if value is None:
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return number
+
 class DistressReportFilterView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
     @swagger_auto_schema(
         operation_description="Filter distress reports with aggregation",
         request_body=DistressFilterSerializer,
@@ -90,18 +111,21 @@ class DistressReportFilterView(APIView):
             response_data.append({
                 'project_name': item['project__project_name'],
                 'segment_id': item['segment__segment_id'],
-                'chainage_start': item['segment__chainage_start'],
-                'chainage_end': item['segment__chainage_end'],
+                'chainage_start': _json_safe_float(item['segment__chainage_start']),
+                'chainage_end': _json_safe_float(item['segment__chainage_end']),
                 'direction': item['segment__direction'],
                 'distress_type': item['distress_type__distress_type_name'],
-                'total_count': item['total_count'],
-                'latitude': item['latitude'],
-                'longitude': item['longitude']
+                'total_count': _json_safe_float(item['total_count']),
+                'latitude': _json_safe_float(item['latitude']),
+                'longitude': _json_safe_float(item['longitude']),
             })
 
         return Response(response_data, status=status.HTTP_200_OK)
 
 class DistressReportSummaryView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
     @swagger_auto_schema(
         operation_description="Get distress summary by type",
         request_body=DistressFilterSerializer,
@@ -153,11 +177,17 @@ class DistressReportSummaryView(APIView):
         )
 
         # Build response as dict
-        response_data = {item['distress_type__distress_type_name']: item['total_count'] for item in results}
+        response_data = {
+            item['distress_type__distress_type_name']: _json_safe_float(item['total_count'])
+            for item in results
+        }
 
         return Response(response_data, status=status.HTTP_200_OK)
 
 class DistressReportFilterNewView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
     @swagger_auto_schema(
         operation_description="Filter distress reports and aggregate by type",
         request_body=DistressFilterSerializer,
@@ -219,11 +249,24 @@ class DistressReportFilterNewView(APIView):
             total_count=Sum('count_val')
         ).order_by('project__project_name', 'distress_type__distress_type_name')
 
-        # Return as list of dicts
-        return Response(list(results), status=status.HTTP_200_OK)
+        # Return as list of dicts (JSON-safe floats)
+        response_data = []
+        for item in results:
+            response_data.append({
+                'project__project_name': item['project__project_name'],
+                'distress_type__distress_type_name': item['distress_type__distress_type_name'],
+                'segment__chainage_start': _json_safe_float(item['segment__chainage_start']),
+                'segment__chainage_end': _json_safe_float(item['segment__chainage_end']),
+                'segment__direction': item['segment__direction'],
+                'total_count': _json_safe_float(item['total_count']),
+            })
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class DistressFullResponseView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
     @swagger_auto_schema(
         operation_description="Filter distress reports and return full response with all fields",
         request_body=DistressFilterSerializer,
@@ -277,35 +320,51 @@ class DistressFullResponseView(APIView):
         ]
 
         final_data = []
-        for obj in queryset:
+        rows = list(queryset)
+        resolved_map = resolved_quantities_by_distress_ids(
+            [obj.distress_id for obj in rows]
+        )
+        for obj in rows:
             distress_type_name = obj.distress_type.distress_type_name.lower().replace('_', ' ')
+            breakdown = quantity_breakdown(
+                obj.count_val,
+                resolved_map.get(obj.distress_id, 0.0),
+            )
+            display_qty = breakdown['remaining_quantity']
             item = {
-                'latitude': obj.latitude or 0,
-                'longitude': obj.longitude or 0,
-                'chainage_start': obj.segment.chainage_start or 0,
-                'chainage_end': obj.segment.chainage_end or 0,
+                'distress_id': obj.distress_id,
+                'latitude': _json_safe_float(obj.latitude),
+                'longitude': _json_safe_float(obj.longitude),
+                'chainage_start': _json_safe_float(obj.segment.chainage_start),
+                'chainage_end': _json_safe_float(obj.segment.chainage_end),
                 'project_name': obj.project.project_name,
                 'distress_type': obj.distress_type.distress_type_name.title(),
                 'direction': obj.segment.direction,
-                'total_distress': obj.count_val or 0,
-                'length': obj.length_val or 0,
-                'area': obj.area_val or 0,
+                'total_distress': display_qty,
+                'predicted_quantity': breakdown['predicted_quantity'],
+                'resolved_quantity': breakdown['resolved_quantity'],
+                'remaining_quantity': breakdown['remaining_quantity'],
+                'length': _json_safe_float(obj.length_val),
+                'area': _json_safe_float(obj.area_val),
                 'carriage_type': obj.segment.carriage_type or "",
-                'width': obj.width_val or 0,
-                'depth': obj.depth_val or 0,
+                'width': _json_safe_float(obj.width_val),
+                'depth': _json_safe_float(obj.depth_val),
                 'lane': obj.segment.lane or "",
                 'date': str(obj.distress_date) if obj.distress_date else None,
             }
             # Set distress type specific fields
             for field in distress_type_fields:
                 field_normalized = field.lower().replace('_', ' ')
-                item[field] = obj.count_val if distress_type_name == field_normalized else 0
+                item[field] = display_qty if distress_type_name == field_normalized else 0
             final_data.append(item)
 
         return Response([final_data])
 
 
 class DistressPredictFilterView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
     @swagger_auto_schema(
         operation_description="Filter distress predictions with exact FastAPI logic",
         request_body=DistressFilterSerializer,
@@ -368,15 +427,31 @@ class DistressPredictFilterView(APIView):
         }
 
         final_data = []
-        for obj in queryset:
+        # Materialize once so we can batch-load repair totals without N+1 queries.
+        rows = list(queryset)
+        resolved_map = resolved_quantities_by_distress_ids(
+            [obj.distress_id for obj in rows]
+        )
+        for obj in rows:
             distress_type_name = obj.distress_type.distress_type_name.lower().replace('_', ' ')
+            breakdown = quantity_breakdown(
+                obj.count_val,
+                resolved_map.get(obj.distress_id, 0.0),
+            )
+            # Display fields use remaining so FE count decreases after repair.
+            # Original AI prediction stays in predicted_quantity (DB unchanged).
+            display_qty = breakdown['remaining_quantity']
             item = {
-                'latitude': obj.latitude or 0,
-                'longitude': obj.longitude or 0,
+                'distress_id': obj.distress_id,
+                'latitude': _json_safe_float(obj.latitude),
+                'longitude': _json_safe_float(obj.longitude),
                 'project_name': obj.project.project_name,
-                'chainage_start': obj.segment.chainage_start or 0,
-                'chainage_end': obj.segment.chainage_end or 0,
-                'total_distress': obj.count_val or 0,
+                'chainage_start': _json_safe_float(obj.segment.chainage_start),
+                'chainage_end': _json_safe_float(obj.segment.chainage_end),
+                'total_distress': display_qty,
+                'predicted_quantity': breakdown['predicted_quantity'],
+                'resolved_quantity': breakdown['resolved_quantity'],
+                'remaining_quantity': breakdown['remaining_quantity'],
                 'distress_type': obj.distress_type.distress_type_name.title(),
                 'direction': obj.segment.direction.lower(),
                 'lane': obj.segment.lane or "",
@@ -385,13 +460,15 @@ class DistressPredictFilterView(APIView):
             }
             # Set distress type specific fields
             for key, field in distress_mapping.items():
-                item[field] = obj.count_val if distress_type_name == key else 0
+                item[field] = display_qty if distress_type_name == key else 0
             final_data.append(item)
 
         return Response([final_data])
 
 
 @api_view(["GET"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsJWTAuthenticated])
 def project_dates(request, dataset):
     # Dataset mapping
     dataset_map = {
@@ -430,6 +507,9 @@ def project_dates(request, dataset):
 
 
 class ChainageSummaryView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
     @swagger_auto_schema(
         operation_description="Get chainage summary grouped by project",
         request_body=ChainageSummarySerializer,

@@ -108,3 +108,40 @@ class DistressReport(models.Model):
 
     def __str__(self):
         return f'DistressReport {self.id} ({self.username}) — {self.Distress_Type}'
+
+
+class DistressRepairLog(models.Model):
+    """Append-only audit log for resolving AI-predicted distresses.
+
+    Location / type attributes are never duplicated here — always read from
+    the linked ``distress`` prediction row via ``distress_id``.
+    Multiple logs per ``distress_id`` are allowed (partial repairs).
+    """
+
+    STATUS_REPAIRED = 'REPAIRED'
+    STATUS_NOT_PRESENT = 'NOT_PRESENT'
+    STATUS_CHOICES = [
+        (STATUS_REPAIRED, 'Repaired'),
+        (STATUS_NOT_PRESENT, 'Not Present'),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    distress_id = models.BigIntegerField(db_index=True)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, db_index=True)
+    quantity_resolved = models.FloatField(default=1.0)
+    updated_by = models.CharField(max_length=150, db_index=True)
+    updated_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    remarks = models.TextField(blank=True, default='')
+
+    class Meta:
+        db_table = 'distress_repair_logs'
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['distress_id', '-updated_at'], name='drl_distress_updated_idx'),
+        ]
+
+    def __str__(self):
+        return (
+            f'DistressRepairLog {self.id} ({self.status}) — '
+            f'distress_id={self.distress_id} qty={self.quantity_resolved}'
+        )
