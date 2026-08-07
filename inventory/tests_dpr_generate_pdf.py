@@ -25,8 +25,7 @@ SAMPLE_PROJECT = {
 SAMPLE_PAYLOAD = {
     'project_details': {
         'project_name': 'Abu Road to Swaroopganj',
-        'start_chainage': '646.000',
-        'end_chainage': '680.000',
+        'chainage': 'Km 650.200 - Km 651.000',
         'total_project_length': '34 km',
         'reporting_engineer_name': 'Ram Patil',
         'assessment_date': '2026-08-05',

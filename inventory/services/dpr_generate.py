@@ -241,60 +241,179 @@ def _master_quantity_for_subcategory(
     return total
 
 
-def build_overall_summary(inventory_reports: Iterable[InventoryReport], project_name: str) -> list[dict]:
-    """Build overall summary rows for subcategories that have at least one report.
+def _master_quantities_by_asset_key(project_ids: list[int]) -> dict[str, float]:
+    """Sum legacy Inventory count_val by normalized asset_type key for the project."""
+    if not project_ids:
+        return {}
+    totals: dict[str, float] = {}
+    rows = (
+        Inventory.objects.filter(project_id__in=project_ids)
+        .values('asset_type__asset_type_name')
+        .annotate(qty=Sum('count_val'))
+    )
+    for row in rows:
+        key = _normalize_asset_key(row['asset_type__asset_type_name'])
+        if not key or key == 'no_asset_found':
+            continue
+        totals[key] = totals.get(key, 0.0) + float(row['qty'] or 0)
+    return totals
 
-    ``inventory_reports`` must already be scoped to the logged-in username.
-    ``total_quantity`` / available stock come from project master ``Inventory`` only.
+
+def _label_match_score(subcategory_name: str, asset_key: str) -> int:
+    """Higher score = better canonical label for a master asset key."""
+    norm = _normalize_asset_key(subcategory_name)
+    if not norm or not asset_key:
+        return 0
+    if norm == asset_key:
+        return 100
+    # "Kilometer Stones" → kilometer_stones ≈ km_stones
+    if norm.replace('kilometer', 'km') == asset_key:
+        return 90
+    if norm.replace('kilometre', 'km') == asset_key:
+        return 90
+    if asset_key.startswith('sign') and 'sign' in norm:
+        return 40
+    return 0
+
+
+def _preferred_labels_by_asset_key() -> dict[str, str]:
+    """Map normalized inventory asset keys → canonical parent subcategory label.
+
+    Uses InventoryCategory → InventorySubcategory from the DB. Among subcategories
+    that map to the same master asset key (e.g. Hectometer + Kilometer → km_stones),
+    prefer the best-matching parent label (Kilometer Stones), not alphabetical order.
+    """
+    from inventory.models import InventorySubcategory
+
+    best: dict[str, tuple[int, int, str]] = {}
+    subs = (
+        InventorySubcategory.objects.filter(is_active=True)
+        .select_related('category')
+        .order_by('display_order', 'name')
+    )
+    for index, sub in enumerate(subs):
+        category_name = sub.category.name if sub.category_id else ''
+        for key in _asset_keys_for_subcategory(sub.name, category_name):
+            score = _label_match_score(sub.name, key)
+            # Lower display_order/index breaks ties toward seed order.
+            rank = (-score, sub.display_order, index, sub.name.casefold())
+            previous = best.get(key)
+            if previous is None or rank < previous[0]:
+                best[key] = (rank, sub.display_order, sub.name)
+    return {key: meta[2] for key, meta in best.items()}
+
+
+def _humanize_asset_key(key: str) -> str:
+    return ' '.join(part.capitalize() for part in str(key or '').split('_') if part)
+
+
+def _report_asset_keys(report: InventoryReport) -> set[str]:
+    """Resolve report → master asset keys via subcategory (and category fallback)."""
+    if report.inventory_subcategory_id:
+        sub = report.inventory_subcategory
+        category_name = sub.category.name if sub.category_id else ''
+        keys = _asset_keys_for_subcategory(sub.name, category_name)
+        if keys:
+            return keys
+        # Fall back to parent InventoryCategory mapping when subcategory has none.
+        if category_name:
+            return _asset_keys_for_subcategory('', category_name)
+        return set()
+    label = (report.Sub_Asset_Type or report.Asset_type or '').strip()
+    if not label:
+        return set()
+    keys = _asset_keys_for_subcategory(label, report.Asset_type or '')
+    if keys:
+        return keys
+    return {_normalize_asset_key(label)}
+
+
+def _report_damaged_quantity(report: InventoryReport) -> float:
+    """Quantity contributed to Overall Summary damaged total (no double paths)."""
+    total = float(report.total_quantity or 0)
+    if total > 0:
+        return total
+    return float(report.nos or 0)
+
+
+def build_overall_summary(inventory_reports: Iterable[InventoryReport], project_name: str) -> list[dict]:
+    """Build overall summary for every legacy Inventory asset on the project.
+
+    Parent rows are master asset types (e.g. km_stones → Kilometer Stones). Damaged
+    quantity sums every InventoryReport whose subcategory maps to that parent
+    (Hectometer Stones + Kilometer Stones → same parent). Each report contributes
+    to exactly one parent key.
     """
     project_ids = _matching_project_ids(project_name)
-    damaged_by_sub: dict[str, dict] = {}
+    master_by_key = _master_quantities_by_asset_key(project_ids)
+    labels_by_key = _preferred_labels_by_asset_key()
 
+    damaged_by_key: dict[str, float] = {}
+    orphan_damaged: dict[str, float] = {}
     for report in inventory_reports:
-        sub = report.inventory_subcategory
-        if sub is None:
-            # Legacy fallback
-            label = (report.Sub_Asset_Type or report.Asset_type or '').strip()
-            if not label:
-                continue
-            category_name = ''
-            sub_id = None
-            sub_name = label
+        qty = _report_damaged_quantity(report)
+        if qty == 0:
+            continue
+        keys = _report_asset_keys(report)
+        matched = sorted(key for key in keys if key in master_by_key)
+        if matched:
+            # Exactly one parent master asset per report — stable key order.
+            target = matched[0]
+            damaged_by_key[target] = damaged_by_key.get(target, 0.0) + qty
+            continue
+        # No master row for this mapping — keep visible under subcategory label.
+        if report.inventory_subcategory_id:
+            label = report.inventory_subcategory.name
         else:
-            label = sub.name
-            category_name = sub.category.name if sub.category_id else ''
-            sub_id = sub.id
-            sub_name = sub.name
-
-        bucket = damaged_by_sub.setdefault(
-            label,
-            {
-                'asset_type': sub_name if sub is not None else label,
-                'subcategory_id': sub_id,
-                'category_name': category_name,
-                'damaged_quantity': 0.0,
-            },
-        )
-        bucket['damaged_quantity'] += float(report.total_quantity or 0)
+            label = (report.Sub_Asset_Type or report.Asset_type or '').strip()
+        if label:
+            orphan_damaged[label] = orphan_damaged.get(label, 0.0) + qty
 
     summary = []
-    for label in sorted(damaged_by_sub.keys(), key=lambda s: s.casefold()):
-        bucket = damaged_by_sub[label]
-        total_quantity = _master_quantity_for_subcategory(
-            project_ids,
-            bucket['asset_type'],
-            bucket.get('category_name'),
-        )
-        damaged_quantity = bucket['damaged_quantity']
+    for key in sorted(master_by_key.keys(), key=lambda k: (labels_by_key.get(k) or k).casefold()):
+        total_quantity = master_by_key[key]
+        damaged_quantity = damaged_by_key.get(key, 0.0)
         summary.append(
             {
-                'asset_type': bucket['asset_type'],
+                'asset_type': labels_by_key.get(key) or _humanize_asset_key(key),
                 'total_quantity': total_quantity,
                 'damaged_quantity': damaged_quantity,
                 'available_quantity': total_quantity - damaged_quantity,
             }
         )
+
+    for label in sorted(orphan_damaged.keys(), key=lambda s: s.casefold()):
+        damaged_quantity = orphan_damaged[label]
+        summary.append(
+            {
+                'asset_type': label,
+                'total_quantity': 0.0,
+                'damaged_quantity': damaged_quantity,
+                'available_quantity': 0.0 - damaged_quantity,
+            }
+        )
     return summary
+
+
+def _format_auto_fetched_chainage(reports: Iterable) -> str:
+    """Build Project Details Chainage from report.chainage values (Km display).
+
+    Uses the same Km formatting as the autofetch chainage service.
+    """
+    from inventory.services.chainage_lookup import _format_chainage_display
+
+    values: list[float] = []
+    for report in reports:
+        key = _chainage_sort_key(getattr(report, 'chainage', ''))
+        if key != float('inf'):
+            values.append(key)
+    if not values:
+        return '-'
+    low = min(values)
+    high = max(values)
+    if low == high:
+        return _format_chainage_display(low)
+    return f'{_format_chainage_display(low)} - {_format_chainage_display(high)}'
 
 
 def _split_media_urls(raw) -> list[str]:
@@ -699,6 +818,9 @@ def generate_asset_change_dpr(
     overall_summary = build_overall_summary(inventory_reports, project['project_name'])
     removed_damaged_assets, removed_photos = _build_inventory_sections(inventory_reports)
     routine_maintenance, rm_photos = _build_rm_sections(rm_reports)
+    chainage = _format_auto_fetched_chainage(
+        list(inventory_reports) + list(rm_reports)
+    )
 
     generation_dt = timezone.now()
     generation_local = timezone.localtime(generation_dt)
@@ -707,8 +829,7 @@ def generate_asset_change_dpr(
     return {
         'project_details': {
             'project_name': project['project_name'],
-            'start_chainage': project['start_chainage'],
-            'end_chainage': project['end_chainage'],
+            'chainage': chainage,
             'total_project_length': project['total_project_length'],
             'reporting_engineer_name': engineer,
             'assessment_date': assessment.strftime('%Y-%m-%d'),

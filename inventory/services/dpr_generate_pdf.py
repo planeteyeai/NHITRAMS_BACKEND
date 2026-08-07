@@ -261,8 +261,7 @@ class AssetChangeDPRPDFBuilder:
         rows = [
             ['Parameter', 'Details'],
             ['Project Name', details.get('project_name') or ''],
-            ['Start Chainage', details.get('start_chainage') or ''],
-            ['End Chainage', details.get('end_chainage') or ''],
+            ['Chainage', details.get('chainage') or '-'],
             ['Total Project Length', details.get('total_project_length') or ''],
             ['Reporting Engineer Name', details.get('reporting_engineer_name') or ''],
             [

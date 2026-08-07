@@ -34,6 +34,12 @@ SAMPLE_PROJECT = {
     'total_project_length': '34 km',
 }
 
+MASTER_QTY = {
+    'sign_boards': 1000.0,
+    'km_stones': 500.0,
+    'crash_barrier': 200.0,
+}
+
 
 @override_settings(JWT_SECRET_KEY='test-jwt-secret')
 class AssetChangeDPRGenerateTests(TestCase):
@@ -184,8 +190,8 @@ class AssetChangeDPRGenerateTests(TestCase):
         return_value=SAMPLE_PROJECT,
     )
     @patch(
-        'inventory.services.dpr_generate._master_quantity_for_subcategory',
-        return_value=1000.0,
+        'inventory.services.dpr_generate._master_quantities_by_asset_key',
+        return_value=MASTER_QTY,
     )
     def test_generate_full_payload_for_engineer(
         self, _mock_qty, _mock_project, _mock_names, _mock_ids
@@ -232,19 +238,25 @@ class AssetChangeDPRGenerateTests(TestCase):
         data = response.data['data']
         details = data['project_details']
         self.assertEqual(details['project_name'], 'Abu Road to Swaroopganj')
-        self.assertEqual(details['start_chainage'], '646.000')
-        self.assertEqual(details['end_chainage'], '680.000')
+        self.assertNotIn('start_chainage', details)
+        self.assertNotIn('end_chainage', details)
         self.assertEqual(details['total_project_length'], '34 km')
+        self.assertEqual(details['chainage'], 'Km 649.100 - Km 651.000')
         self.assertEqual(details['reporting_engineer_name'], 'mayurp')
         self.assertEqual(details['generated_by'], 'authority.user')
         self.assertEqual(details['from_date'], '2026-08-01')
         self.assertEqual(details['to_date'], '2026-08-05')
 
         summary = data['overall_summary']
-        self.assertEqual(len(summary), 1)
-        self.assertEqual(summary[0]['total_quantity'], 1000.0)
-        self.assertEqual(summary[0]['damaged_quantity'], 5.0)
-        self.assertEqual(summary[0]['available_quantity'], 995.0)
+        self.assertEqual(len(summary), 3)
+        # Informatory Signs maps to sign_boards (preferred label among sign keys).
+        damaged_row = next(row for row in summary if row['damaged_quantity'] == 5.0)
+        self.assertEqual(damaged_row['total_quantity'], 1000.0)
+        self.assertEqual(damaged_row['available_quantity'], 995.0)
+        zero_damage = [row for row in summary if row['damaged_quantity'] == 0.0]
+        self.assertEqual(len(zero_damage), 2)
+        for row in zero_damage:
+            self.assertEqual(row['available_quantity'], row['total_quantity'])
 
         assets = data['removed_damaged_assets']
         self.assertEqual(len(assets), 2)
@@ -283,8 +295,8 @@ class AssetChangeDPRGenerateTests(TestCase):
         return_value=SAMPLE_PROJECT,
     )
     @patch(
-        'inventory.services.dpr_generate._master_quantity_for_subcategory',
-        return_value=1000.0,
+        'inventory.services.dpr_generate._master_quantities_by_asset_key',
+        return_value={'sign_boards': 1000.0},
     )
     def test_engineer_a_vs_engineer_b_no_cross_leakage(
         self, _mock_qty, _mock_project, _mock_names, _mock_ids
@@ -318,6 +330,10 @@ class AssetChangeDPRGenerateTests(TestCase):
 
         self.assertEqual(mayur_data['project_details']['reporting_engineer_name'], 'mayurp')
         self.assertEqual(ram_data['project_details']['reporting_engineer_name'], 'ram.patil')
+        self.assertEqual(
+            mayur_data['project_details']['chainage'],
+            'Km 650.100 - Km 651.100',
+        )
         self.assertEqual(mayur_data['removed_damaged_assets'][0]['chainage'], mayur.chainage)
         self.assertEqual(ram_data['removed_damaged_assets'][0]['chainage'], ram.chainage)
         self.assertEqual(mayur_data['overall_summary'][0]['damaged_quantity'], 2.0)
@@ -338,8 +354,8 @@ class AssetChangeDPRGenerateTests(TestCase):
         return_value=SAMPLE_PROJECT,
     )
     @patch(
-        'inventory.services.dpr_generate._master_quantity_for_subcategory',
-        return_value=1000.0,
+        'inventory.services.dpr_generate._master_quantities_by_asset_key',
+        return_value={'sign_boards': 1000.0},
     )
     def test_different_date_ranges(self, _mock_qty, _mock_project, _mock_names, _mock_ids):
         self._create_inventory_report(
@@ -347,12 +363,14 @@ class AssetChangeDPRGenerateTests(TestCase):
             inspection_datetime=datetime(2026, 8, 5, 10, 0, tzinfo=dt_timezone.utc),
             total_quantity=2,
             Image_URL='',
+            chainage='650.200',
         )
         self._create_inventory_report(
             username='mayurp',
             inspection_datetime=datetime(2026, 8, 4, 10, 0, tzinfo=dt_timezone.utc),
             total_quantity=7,
             Image_URL='',
+            chainage='649.000',
         )
         response = self.client.post(
             '/api/inventory/dpr/generate/',
@@ -367,6 +385,10 @@ class AssetChangeDPRGenerateTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data['data']['removed_damaged_assets']), 1)
         self.assertEqual(response.data['data']['overall_summary'][0]['damaged_quantity'], 2.0)
+        self.assertEqual(
+            response.data['data']['project_details']['chainage'],
+            'Km 650.200',
+        )
 
     @patch(
         'inventory.services.dpr_generate._matching_project_ids',
@@ -419,16 +441,68 @@ class AssetChangeDPRGenerateTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_build_overall_summary_only_reported_assets(self):
+    def test_build_overall_summary_includes_undamaged_assets(self):
         report = self._create_inventory_report(total_quantity=4)
         with patch(
             'inventory.services.dpr_generate._matching_project_ids',
             return_value=[1],
         ), patch(
-            'inventory.services.dpr_generate._master_quantity_for_subcategory',
-            return_value=100.0,
+            'inventory.services.dpr_generate._master_quantities_by_asset_key',
+            return_value={'sign_boards': 100.0, 'km_stones': 50.0},
         ):
             summary = build_overall_summary([report], SAMPLE_PROJECT['project_name'])
-        self.assertEqual(len(summary), 1)
-        self.assertEqual(summary[0]['damaged_quantity'], 4.0)
-        self.assertEqual(summary[0]['available_quantity'], 96.0)
+        self.assertEqual(len(summary), 2)
+        damaged = next(row for row in summary if row['damaged_quantity'] == 4.0)
+        undamaged = next(row for row in summary if row['damaged_quantity'] == 0.0)
+        self.assertEqual(damaged['total_quantity'], 100.0)
+        self.assertEqual(damaged['available_quantity'], 96.0)
+        self.assertEqual(undamaged['total_quantity'], 50.0)
+        self.assertEqual(undamaged['available_quantity'], 50.0)
+
+    def test_hectometer_damage_rolls_up_to_kilometer_stones(self):
+        """Hectometer Stones reports must update parent Kilometer Stones damaged qty."""
+        hecto = InventorySubcategory.objects.get(name='Hectometer Stones')
+        report = self._create_inventory_report(
+            inventory_category=hecto.category,
+            inventory_subcategory=hecto,
+            total_quantity=2,
+            nos=2,
+            Image_URL='',
+        )
+        with patch(
+            'inventory.services.dpr_generate._matching_project_ids',
+            return_value=[1],
+        ), patch(
+            'inventory.services.dpr_generate._master_quantities_by_asset_key',
+            return_value={'km_stones': 1295.0, 'sign_boards': 100.0},
+        ):
+            summary = build_overall_summary([report], SAMPLE_PROJECT['project_name'])
+
+        by_type = {row['asset_type']: row for row in summary}
+        self.assertIn('Kilometer Stones', by_type)
+        self.assertEqual(by_type['Kilometer Stones']['total_quantity'], 1295.0)
+        self.assertEqual(by_type['Kilometer Stones']['damaged_quantity'], 2.0)
+        self.assertEqual(by_type['Kilometer Stones']['available_quantity'], 1293.0)
+        undamaged = next(row for row in summary if row['total_quantity'] == 100.0)
+        self.assertEqual(undamaged['damaged_quantity'], 0.0)
+        self.assertEqual(undamaged['available_quantity'], 100.0)
+        # Must not create a separate Hectometer Stones summary row.
+        self.assertNotIn('Hectometer Stones', by_type)
+
+    def test_auto_fetched_chainage_helpers(self):
+        from inventory.services.dpr_generate import _format_auto_fetched_chainage
+
+        class _R:
+            def __init__(self, chainage):
+                self.chainage = chainage
+
+        self.assertEqual(_format_auto_fetched_chainage([]), '-')
+        self.assertEqual(_format_auto_fetched_chainage([_R('650.240')]), 'Km 650.240')
+        self.assertEqual(
+            _format_auto_fetched_chainage([_R('650.240'), _R('653.810')]),
+            'Km 650.240 - Km 653.810',
+        )
+        self.assertEqual(
+            _format_auto_fetched_chainage([_R(''), _R(None)]),
+            '-',
+        )
