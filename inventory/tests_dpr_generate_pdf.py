@@ -245,3 +245,20 @@ class AssetChangeDPRGeneratePDFTests(TestCase):
         self.assertEqual(response['Content-Type'], 'application/pdf')
         chunks = b''.join(response.streaming_content)
         self.assertTrue(chunks.startswith(b'%PDF'))
+
+    def test_no_data_found_returns_404(self):
+        from inventory.services.dpr_generate import DPRRecordsNotFound
+
+        with patch(
+            'inventory.views_dpr_generate.DPRGenerationService.generate',
+            side_effect=DPRRecordsNotFound('mayurp'),
+        ):
+            response = self.client.post(
+                '/api/inventory/dpr/generate-pdf/',
+                _body(reporting_engineer_name='mayurp'),
+                format='json',
+                **self.auth,
+            )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(response.data['success'])
+        self.assertIn('mayurp', response.data['message'])

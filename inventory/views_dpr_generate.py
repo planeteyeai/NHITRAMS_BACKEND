@@ -12,13 +12,34 @@ from rest_framework.views import APIView
 from inventory.authentication import JWTAuthentication
 from inventory.permissions import IsJWTAuthenticated
 from inventory.serializers_dpr_generate import AssetChangeDPRGenerateRequestSerializer
-from inventory.services.dpr_generate import DPRGenerationService, generate_asset_change_dpr
+from inventory.services.dpr_generate import (
+    DPRGenerationService,
+    DPRRecordsNotFound,
+    generate_asset_change_dpr,
+)
 from inventory.services.dpr_generate_pdf import (
     build_dpr_pdf_filename,
     render_asset_change_dpr_pdf,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _handle_dpr_exception(exc):
+    if isinstance(exc, DPRRecordsNotFound):
+        return Response(
+            {'success': False, 'message': exc.message},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if isinstance(exc, ValidationError):
+        return Response(
+            {
+                'success': False,
+                'errors': exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)},
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    raise exc
 
 
 class AssetChangeDPRGenerateView(APIView):
@@ -31,7 +52,8 @@ class AssetChangeDPRGenerateView(APIView):
         operation_description=(
             'Generate Asset Change Detection and Monitoring DPR JSON for a project. '
             'Read-only: aggregates Inventory Reports and Routine Maintenance reports '
-            'owned by the JWT username (reporting engineer). '
+            'for reporting_engineer_name (exact match to report.username). '
+            'JWT authenticates the caller only; it does not filter DPR rows. '
             'Does not create or modify records.'
         ),
         request_body=AssetChangeDPRGenerateRequestSerializer,
@@ -39,6 +61,7 @@ class AssetChangeDPRGenerateView(APIView):
             200: openapi.Response('DPR generated'),
             400: 'Validation error',
             401: 'Unauthorized',
+            404: 'No records for reporting engineer in project/date range',
         },
         security=[{'Bearer': []}],
         tags=['DPR Generate'],
@@ -59,16 +82,10 @@ class AssetChangeDPRGenerateView(APIView):
                 assessment_date=data['assessment_date'],
                 from_date=data['from_date'],
                 to_date=data['to_date'],
-                username=request.user.username,
+                generated_by=request.user.username,
             )
-        except ValidationError as exc:
-            return Response(
-                {
-                    'success': False,
-                    'errors': exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)},
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        except (ValidationError, DPRRecordsNotFound) as exc:
+            return _handle_dpr_exception(exc)
 
         return Response(
             {
@@ -90,14 +107,15 @@ class AssetChangeDPRGeneratePDFView(APIView):
         operation_description=(
             'Generate Asset Change Detection and Monitoring DPR as a downloadable PDF. '
             'Reuses DPRGenerationService JSON (same request body as /api/inventory/dpr/generate/). '
-            'Includes only reports for the JWT username (reporting engineer). '
-            'Does not create or modify records.'
+            'Filters by reporting_engineer_name (exact report.username). '
+            'JWT authenticates the caller only. Does not create or modify records.'
         ),
         request_body=AssetChangeDPRGenerateRequestSerializer,
         responses={
             200: openapi.Response('PDF file', schema=openapi.Schema(type=openapi.TYPE_FILE)),
             400: 'Validation error',
             401: 'Unauthorized',
+            404: 'No records for reporting engineer in project/date range',
             500: 'PDF generation failure',
         },
         security=[{'Bearer': []}],
@@ -121,16 +139,10 @@ class AssetChangeDPRGeneratePDFView(APIView):
                 assessment_date=data['assessment_date'],
                 from_date=data['from_date'],
                 to_date=data['to_date'],
-                username=request.user.username,
+                generated_by=request.user.username,
             )
-        except ValidationError as exc:
-            return Response(
-                {
-                    'success': False,
-                    'errors': exc.detail if hasattr(exc, 'detail') else {'detail': str(exc)},
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        except (ValidationError, DPRRecordsNotFound) as exc:
+            return _handle_dpr_exception(exc)
 
         details = payload.get('project_details') or {}
         download_name = build_dpr_pdf_filename(

@@ -242,7 +242,11 @@ def _master_quantity_for_subcategory(
 
 
 def build_overall_summary(inventory_reports: Iterable[InventoryReport], project_name: str) -> list[dict]:
-    """Build overall summary rows for subcategories that have at least one report."""
+    """Build overall summary rows for subcategories that have at least one report.
+
+    ``inventory_reports`` must already be scoped to the logged-in username.
+    ``total_quantity`` / available stock come from project master ``Inventory`` only.
+    """
     project_ids = _matching_project_ids(project_name)
     damaged_by_sub: dict[str, dict] = {}
 
@@ -406,6 +410,7 @@ def _sorted_reports(reports: list) -> list:
 
 
 def _build_inventory_sections(reports: list[InventoryReport]) -> tuple[list[dict], list[dict]]:
+    """Build removed/damaged detail + photo sections from an already username-scoped list."""
     details = []
     photos = []
     image_counter = 0
@@ -457,6 +462,7 @@ def _build_inventory_sections(reports: list[InventoryReport]) -> tuple[list[dict
 
 
 def _build_rm_sections(reports: list[RoutineMaintenanceReport]) -> tuple[list[dict], list[dict]]:
+    """Build RM detail + photo sections from an already username-scoped report list."""
     details = []
     photos = []
     image_counter = 0
@@ -504,6 +510,128 @@ def _build_rm_sections(reports: list[RoutineMaintenanceReport]) -> tuple[list[di
     return details, photos
 
 
+def _project_name_matches(
+    report_project_name: str,
+    *,
+    target_key: str,
+    name_variants: list[str],
+) -> bool:
+    if report_project_name in name_variants:
+        return True
+    return _normalize_project_key(report_project_name) == target_key
+
+
+def _expand_name_variants_for_user(
+    *,
+    username: str,
+    name_variants: list[str],
+    target_key: str,
+) -> list[str]:
+    """Include project_name strings this engineer stored that normalize to the same project.
+
+    Keeps ORM ``project_name__in`` accurate when reports used a spelling not present
+    on the Project master row set.
+    """
+    variants = list(name_variants)
+    known = set(variants)
+    for model in (InventoryReport, RoutineMaintenanceReport):
+        for stored in (
+            model.objects.filter(username=username)
+            .exclude(project_name__in=known)
+            .values_list('project_name', flat=True)
+            .distinct()
+        ):
+            if stored and _normalize_project_key(stored) == target_key and stored not in known:
+                variants.append(stored)
+                known.add(stored)
+    return variants
+
+
+def _load_engineer_inventory_reports(
+    *,
+    engineer_username: str,
+    name_variants: list[str],
+    target_key: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> list[InventoryReport]:
+    """Inventory reports for DPR — filter by reporting engineer username + project."""
+    qs = (
+        InventoryReport.objects.filter(
+            username=engineer_username,
+            project_name__in=name_variants,
+        )
+        .filter(
+            inspection_datetime__gte=period_start,
+            inspection_datetime__lte=period_end,
+        )
+        .select_related(
+            'inventory_category',
+            'inventory_subcategory',
+            'inventory_subcategory__category',
+            'side',
+            'severity',
+        )
+    )
+    return [
+        report
+        for report in qs
+        if _project_name_matches(
+            report.project_name,
+            target_key=target_key,
+            name_variants=name_variants,
+        )
+    ]
+
+
+def _load_engineer_rm_reports(
+    *,
+    engineer_username: str,
+    name_variants: list[str],
+    target_key: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> list[RoutineMaintenanceReport]:
+    """RM reports for DPR — filter by reporting engineer username + project."""
+    qs = (
+        RoutineMaintenanceReport.objects.filter(
+            username=engineer_username,
+            project_name__in=name_variants,
+        )
+        .filter(
+            inspection_datetime__gte=period_start,
+            inspection_datetime__lte=period_end,
+        )
+        .select_related(
+            'category',
+            'subcategory',
+            'side',
+            'severity',
+        )
+    )
+    return [
+        report
+        for report in qs
+        if _project_name_matches(
+            report.project_name,
+            target_key=target_key,
+            name_variants=name_variants,
+        )
+    ]
+
+
+class DPRRecordsNotFound(Exception):
+    """No Inventory/RM rows for the requested engineer in project + date range."""
+
+    def __init__(self, engineer: str):
+        self.engineer = engineer
+        self.message = (
+            f"No DPR records found for reporting engineer '{engineer}' "
+            'in the selected project and date range.'
+        )
+        super().__init__(self.message)
+
+
 def generate_asset_change_dpr(
     *,
     project_name: str,
@@ -511,11 +639,19 @@ def generate_asset_change_dpr(
     assessment_date,
     from_date,
     to_date,
-    username: str,
+    generated_by: str = '',
 ) -> dict:
     """Assemble the full Asset Change Detection and Monitoring DPR payload.
 
     assessment_date is metadata only. Inventory/RM filtering uses from_date..to_date.
+
+    User-entered sections (overall damaged qty, removed assets/photos, RM/photos)
+    are scoped to ``reporting_engineer_name``, which must match report.username
+    exactly. Project master lookups (Project, legacy Inventory stock) stay
+    project-scoped only.
+
+    ``generated_by`` is optional audit metadata (authenticated caller) and is
+    never used for filtering.
     """
     project = resolve_project_details(project_name)
     assessment = _parse_assessment_date(assessment_date)
@@ -535,46 +671,38 @@ def generate_asset_change_dpr(
         name_variants.append(project_name)
 
     target_key = _normalize_project_key(project['project_name'])
+    name_variants = _expand_name_variants_for_user(
+        username=engineer,
+        name_variants=name_variants,
+        target_key=target_key,
+    )
 
-    inventory_reports = [
-        report
-        for report in InventoryReport.objects.select_related(
-            'inventory_category',
-            'inventory_subcategory',
-            'inventory_subcategory__category',
-            'side',
-            'severity',
-        )
-        if (
-            _normalize_project_key(report.project_name) == target_key
-            or report.project_name in name_variants
-        )
-        and report.username == username
-        and _inspection_in_period(report.inspection_datetime, period_start, period_end)
-    ]
+    inventory_reports = _load_engineer_inventory_reports(
+        engineer_username=engineer,
+        name_variants=name_variants,
+        target_key=target_key,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    rm_reports = _load_engineer_rm_reports(
+        engineer_username=engineer,
+        name_variants=name_variants,
+        target_key=target_key,
+        period_start=period_start,
+        period_end=period_end,
+    )
 
-    rm_reports = [
-        report
-        for report in RoutineMaintenanceReport.objects.select_related(
-            'category',
-            'subcategory',
-            'side',
-            'severity',
-        )
-        if (
-            _normalize_project_key(report.project_name) == target_key
-            or report.project_name in name_variants
-        )
-        and report.username == username
-        and _inspection_in_period(report.inspection_datetime, period_start, period_end)
-    ]
+    if not inventory_reports and not rm_reports:
+        raise DPRRecordsNotFound(engineer)
 
+    # damaged_quantity — engineer-scoped reports; total_quantity is project master.
     overall_summary = build_overall_summary(inventory_reports, project['project_name'])
     removed_damaged_assets, removed_photos = _build_inventory_sections(inventory_reports)
     routine_maintenance, rm_photos = _build_rm_sections(rm_reports)
 
     generation_dt = timezone.now()
     generation_local = timezone.localtime(generation_dt)
+    caller = str(generated_by or '').strip()
 
     return {
         'project_details': {
@@ -595,7 +723,7 @@ def generate_asset_change_dpr(
             'generation_date': generation_dt.isoformat(),
             'generation_date_display': generation_local.strftime('%d/%m/%Y'),
             'generation_datetime_display': generation_local.strftime('%d/%m/%Y %H:%M IST'),
-            'generated_by': username,
+            'generated_by': caller,
         },
         'overall_summary': overall_summary,
         'removed_damaged_assets': removed_damaged_assets,
@@ -616,13 +744,16 @@ class DPRGenerationService:
         assessment_date,
         from_date,
         to_date,
-        username: str,
+        generated_by: str = '',
+        username: str = '',
     ) -> dict:
+        # ``username`` kept as deprecated alias for generated_by (auth caller only).
+        caller = generated_by or username
         return generate_asset_change_dpr(
             project_name=project_name,
             reporting_engineer_name=reporting_engineer_name,
             assessment_date=assessment_date,
             from_date=from_date,
             to_date=to_date,
-            username=username,
+            generated_by=caller,
         )

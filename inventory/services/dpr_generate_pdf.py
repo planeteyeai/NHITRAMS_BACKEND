@@ -521,6 +521,9 @@ class AssetChangeDPRPDFBuilder:
 
 
 def render_asset_change_dpr_pdf(payload: dict, output_path: str, *, temp_dir: str) -> str:
-    """Render PDF file from DPR JSON payload. Returns output_path."""
+    """Render PDF file from DPR JSON payload. Returns output_path.
+
+    Does not query InventoryReport or RoutineMaintenanceReport — layout only.
+    """
     builder = AssetChangeDPRPDFBuilder(payload, temp_dir=temp_dir)
     return builder.build(output_path)
