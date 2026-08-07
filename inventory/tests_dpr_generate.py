@@ -238,10 +238,10 @@ class AssetChangeDPRGenerateTests(TestCase):
         data = response.data['data']
         details = data['project_details']
         self.assertEqual(details['project_name'], 'Abu Road to Swaroopganj')
-        self.assertNotIn('start_chainage', details)
-        self.assertNotIn('end_chainage', details)
+        self.assertEqual(details['start_chainage'], '646.000')
+        self.assertEqual(details['end_chainage'], '680.000')
         self.assertEqual(details['total_project_length'], '34 km')
-        self.assertEqual(details['chainage'], 'Km 649.100 - Km 651.000')
+        self.assertNotIn('chainage', details)
         self.assertEqual(details['reporting_engineer_name'], 'mayurp')
         self.assertEqual(details['generated_by'], 'authority.user')
         self.assertEqual(details['from_date'], '2026-08-01')
@@ -330,10 +330,6 @@ class AssetChangeDPRGenerateTests(TestCase):
 
         self.assertEqual(mayur_data['project_details']['reporting_engineer_name'], 'mayurp')
         self.assertEqual(ram_data['project_details']['reporting_engineer_name'], 'ram.patil')
-        self.assertEqual(
-            mayur_data['project_details']['chainage'],
-            'Km 650.100 - Km 651.100',
-        )
         self.assertEqual(mayur_data['removed_damaged_assets'][0]['chainage'], mayur.chainage)
         self.assertEqual(ram_data['removed_damaged_assets'][0]['chainage'], ram.chainage)
         self.assertEqual(mayur_data['overall_summary'][0]['damaged_quantity'], 2.0)
@@ -385,10 +381,8 @@ class AssetChangeDPRGenerateTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data['data']['removed_damaged_assets']), 1)
         self.assertEqual(response.data['data']['overall_summary'][0]['damaged_quantity'], 2.0)
-        self.assertEqual(
-            response.data['data']['project_details']['chainage'],
-            'Km 650.200',
-        )
+        self.assertEqual(response.data['data']['project_details']['start_chainage'], '646.000')
+        self.assertEqual(response.data['data']['project_details']['end_chainage'], '680.000')
 
     @patch(
         'inventory.services.dpr_generate._matching_project_ids',
@@ -488,21 +482,3 @@ class AssetChangeDPRGenerateTests(TestCase):
         self.assertEqual(undamaged['available_quantity'], 100.0)
         # Must not create a separate Hectometer Stones summary row.
         self.assertNotIn('Hectometer Stones', by_type)
-
-    def test_auto_fetched_chainage_helpers(self):
-        from inventory.services.dpr_generate import _format_auto_fetched_chainage
-
-        class _R:
-            def __init__(self, chainage):
-                self.chainage = chainage
-
-        self.assertEqual(_format_auto_fetched_chainage([]), '-')
-        self.assertEqual(_format_auto_fetched_chainage([_R('650.240')]), 'Km 650.240')
-        self.assertEqual(
-            _format_auto_fetched_chainage([_R('650.240'), _R('653.810')]),
-            'Km 650.240 - Km 653.810',
-        )
-        self.assertEqual(
-            _format_auto_fetched_chainage([_R(''), _R(None)]),
-            '-',
-        )

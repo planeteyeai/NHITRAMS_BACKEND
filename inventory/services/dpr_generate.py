@@ -395,27 +395,6 @@ def build_overall_summary(inventory_reports: Iterable[InventoryReport], project_
     return summary
 
 
-def _format_auto_fetched_chainage(reports: Iterable) -> str:
-    """Build Project Details Chainage from report.chainage values (Km display).
-
-    Uses the same Km formatting as the autofetch chainage service.
-    """
-    from inventory.services.chainage_lookup import _format_chainage_display
-
-    values: list[float] = []
-    for report in reports:
-        key = _chainage_sort_key(getattr(report, 'chainage', ''))
-        if key != float('inf'):
-            values.append(key)
-    if not values:
-        return '-'
-    low = min(values)
-    high = max(values)
-    if low == high:
-        return _format_chainage_display(low)
-    return f'{_format_chainage_display(low)} - {_format_chainage_display(high)}'
-
-
 def _split_media_urls(raw) -> list[str]:
     if raw is None or raw == '':
         return []
@@ -818,9 +797,6 @@ def generate_asset_change_dpr(
     overall_summary = build_overall_summary(inventory_reports, project['project_name'])
     removed_damaged_assets, removed_photos = _build_inventory_sections(inventory_reports)
     routine_maintenance, rm_photos = _build_rm_sections(rm_reports)
-    chainage = _format_auto_fetched_chainage(
-        list(inventory_reports) + list(rm_reports)
-    )
 
     generation_dt = timezone.now()
     generation_local = timezone.localtime(generation_dt)
@@ -829,7 +805,8 @@ def generate_asset_change_dpr(
     return {
         'project_details': {
             'project_name': project['project_name'],
-            'chainage': chainage,
+            'start_chainage': project['start_chainage'],
+            'end_chainage': project['end_chainage'],
             'total_project_length': project['total_project_length'],
             'reporting_engineer_name': engineer,
             'assessment_date': assessment.strftime('%Y-%m-%d'),
