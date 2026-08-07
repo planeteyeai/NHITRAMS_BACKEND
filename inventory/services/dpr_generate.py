@@ -549,6 +549,7 @@ def generate_asset_change_dpr(
             _normalize_project_key(report.project_name) == target_key
             or report.project_name in name_variants
         )
+        and report.username == username
         and _inspection_in_period(report.inspection_datetime, period_start, period_end)
     ]
 
@@ -564,6 +565,7 @@ def generate_asset_change_dpr(
             _normalize_project_key(report.project_name) == target_key
             or report.project_name in name_variants
         )
+        and report.username == username
         and _inspection_in_period(report.inspection_datetime, period_start, period_end)
     ]
 

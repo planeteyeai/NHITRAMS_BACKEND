@@ -22,7 +22,9 @@ class LoginView(APIView):
     @swagger_auto_schema(
         operation_description=(
             'Generate a JWT for the AI Identifier. '
-            'Call this after a successful PHP login. Sends username only — no password.'
+            'Call this after a successful PHP login. '
+            'Send the real NHIT RAMS username (e.g. ram.patil), not the numeric user id. '
+            'Optional aliases: user_name, login_username, name. user_id is ignored for JWT.'
         ),
         request_body=LoginSerializer,
         responses={
@@ -36,7 +38,7 @@ class LoginView(APIView):
                     }
                 },
             ),
-            400: 'Bad Request — username missing or invalid',
+            400: 'Bad Request — username missing, blank, or numeric user id only',
         },
         tags=['AI Authentication'],
     )
@@ -56,6 +58,7 @@ class LoginView(APIView):
                 'success': True,
                 'token': token,
                 'expires_in': TOKEN_LIFETIME_SECONDS,
+                'username': username,
             },
             status=status.HTTP_200_OK,
         )

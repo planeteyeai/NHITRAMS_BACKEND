@@ -35,6 +35,28 @@ class AuthLoginTests(TestCase):
         response = self.client.post('/api/auth/login', {'username': '   '}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_login_rejects_numeric_user_id(self):
+        response = self.client.post('/api/auth/login', {'username': '76'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data['success'])
+        self.assertIn('username', response.data['errors'])
+
+    def test_login_uses_user_name_when_username_is_numeric(self):
+        response = self.client.post(
+            '/api/auth/login',
+            {'username': '76', 'user_name': 'ram.patil', 'user_id': '76'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['username'], 'ram.patil')
+        payload = jwt.decode(response.data['token'], 'test-jwt-secret', algorithms=['HS256'])
+        self.assertEqual(payload['username'], 'ram.patil')
+
+    def test_login_returns_resolved_username(self):
+        response = self.client.post('/api/auth/login', {'username': 'ram.patil'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['username'], 'ram.patil')
+
 
 @override_settings(JWT_SECRET_KEY='test-jwt-secret')
 class ReportAPITests(TestCase):

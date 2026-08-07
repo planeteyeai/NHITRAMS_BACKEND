@@ -30,7 +30,8 @@ class AssetChangeDPRGenerateView(APIView):
     @swagger_auto_schema(
         operation_description=(
             'Generate Asset Change Detection and Monitoring DPR JSON for a project. '
-            'Read-only: aggregates Inventory Reports and Routine Maintenance reports. '
+            'Read-only: aggregates Inventory Reports and Routine Maintenance reports '
+            'owned by the JWT username (reporting engineer). '
             'Does not create or modify records.'
         ),
         request_body=AssetChangeDPRGenerateRequestSerializer,
@@ -89,6 +90,7 @@ class AssetChangeDPRGeneratePDFView(APIView):
         operation_description=(
             'Generate Asset Change Detection and Monitoring DPR as a downloadable PDF. '
             'Reuses DPRGenerationService JSON (same request body as /api/inventory/dpr/generate/). '
+            'Includes only reports for the JWT username (reporting engineer). '
             'Does not create or modify records.'
         ),
         request_body=AssetChangeDPRGenerateRequestSerializer,

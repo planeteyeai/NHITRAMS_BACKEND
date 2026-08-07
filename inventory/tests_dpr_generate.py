@@ -357,6 +357,46 @@ class AssetChangeDPRGenerateTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch(
+        'inventory.services.dpr_generate._matching_project_ids',
+        return_value=[1],
+    )
+    @patch(
+        'inventory.services.dpr_generate._matching_project_names',
+        return_value=[SAMPLE_PROJECT['project_name']],
+    )
+    @patch(
+        'inventory.services.dpr_generate.resolve_project_details',
+        return_value=SAMPLE_PROJECT,
+    )
+    @patch(
+        'inventory.services.dpr_generate._master_quantity_for_subcategory',
+        return_value=1000.0,
+    )
+    def test_generate_includes_only_jwt_username_reports(
+        self, _mock_qty, _mock_project, _mock_names, _mock_ids
+    ):
+        own = self._create_inventory_report(username='ram.patil', total_quantity=2, Image_URL='')
+        self._create_inventory_report(username='other.user', total_quantity=99, Image_URL='')
+        self._create_inventory_report(username='76', total_quantity=50, Image_URL='')
+        self._create_rm_report(username='ram.patil')
+        self._create_rm_report(username='other.user')
+
+        response = self.client.post(
+            '/api/inventory/dpr/generate/',
+            self._request_body(),
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data['data']
+        assets = data['removed_damaged_assets']
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]['chainage'], own.chainage)
+        self.assertEqual(data['overall_summary'][0]['damaged_quantity'], 2.0)
+        self.assertEqual(len(data['routine_maintenance']), 1)
+        self.assertEqual(data['project_details']['generated_by'], 'ram.patil')
+
     def test_build_overall_summary_only_reported_assets(self):
         report = self._create_inventory_report(total_quantity=4)
         with patch(
