@@ -34,6 +34,7 @@ AUTH_ENDPOINTS = [
     ('POST', '/api/distress/report/summary/', {'project_name': ['Agra Bypass Road']}),
     ('POST', '/chainage-summary', {'dataset': 'distress_predicted'}),
     ('GET', '/projects-dates/distress_predicted/', None),
+    ('GET', '/api/distress/carriage-types/', None),
     ('PATCH', '/api/distress/repair', {'distress_id': 1, 'status': 'REPAIRED'}),
 ]
 

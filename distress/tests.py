@@ -53,6 +53,41 @@ class AppendDistressReportedExcelTests(TestCase):
         self.assertEqual(report.Distress_Type, 'Pothole')
         self.assertEqual(report.Latitude, 19.076)
         self.assertEqual(report.No_of_Distress, 1)
+        self.assertEqual(report.Carriage_Type, 'Flexible')
+
+    def test_append_requires_carriage_type(self):
+        payload = {k: v for k, v in SAMPLE_PAYLOAD.items() if k != 'Carriage_Type'}
+        response = self.client.post(
+            '/append_distressReported_excel/',
+            payload,
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Carriage_Type', response.data)
+
+    def test_append_rejects_invalid_carriage_type(self):
+        payload = {**SAMPLE_PAYLOAD, 'Carriage_Type': 'Concrete'}
+        response = self.client.post(
+            '/append_distressReported_excel/',
+            payload,
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Carriage_Type', response.data)
+
+    def test_append_accepts_carriage_type_alias(self):
+        payload = {k: v for k, v in SAMPLE_PAYLOAD.items() if k != 'Carriage_Type'}
+        payload['carriage_type'] = 'rigid'
+        response = self.client.post(
+            '/append_distressReported_excel/',
+            payload,
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(DistressReport.objects.get().Carriage_Type, 'Rigid')
 
     def test_append_requires_auth(self):
         response = self.client.post(

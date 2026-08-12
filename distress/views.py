@@ -42,6 +42,24 @@ def _json_safe_float(value, default=0.0):
         return default
     return number
 
+
+CARRIAGE_TYPE_DROPDOWN = [
+    {'id': 'Flexible', 'name': 'Flexible'},
+    {'id': 'Rigid', 'name': 'Rigid'},
+]
+
+
+def _apply_carriage_type_filter(queryset, data):
+    """Filter by segment.carriage_type when carriage_type is provided (not All)."""
+    values = data.get('carriage_type') or []
+    if not values or any(str(v).lower() == 'all' for v in values):
+        return queryset
+    q_objects = Q()
+    for value in values:
+        q_objects |= Q(segment__carriage_type__iexact=value)
+    return queryset.filter(q_objects)
+
+
 class DistressReportFilterView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsJWTAuthenticated]
@@ -270,7 +288,7 @@ class DistressFullResponseView(APIView):
     @swagger_auto_schema(
         operation_description=(
             "Filter distress reports and return full response with all fields. "
-            "Use direction/distress_type/project_name value \"All\" to skip that filter."
+            "Use direction/distress_type/project_name/carriage_type value \"All\" to skip that filter."
         ),
         request_body=DistressFilterSerializer,
         responses={
@@ -355,6 +373,8 @@ class DistressFullResponseView(APIView):
             and not any(d.lower() == 'all' for d in data['direction'])
         ):
             queryset = queryset.filter(segment__direction__in=data['direction'])
+
+        queryset = _apply_carriage_type_filter(queryset, data)
 
         # List of distress type fields (frontend contract keys)
         distress_type_fields = [
@@ -459,6 +479,8 @@ class DistressPredictFilterView(APIView):
                 q_objects |= Q(distress_type__distress_type_name__iexact=dtype)
             queryset = queryset.filter(q_objects)
 
+        queryset = _apply_carriage_type_filter(queryset, data)
+
         # Check if no data
         if not queryset.exists():
             return Response({"message": "No match"})
@@ -516,6 +538,25 @@ class DistressPredictFilterView(APIView):
             final_data.append(item)
 
         return Response([final_data])
+
+
+class DistressCarriageTypeMasterView(APIView):
+    """GET /api/distress/carriage-types/ — dropdown values for AI Identifier."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description='Carriage type dropdown values (Rigid, Flexible).',
+        responses={200: openapi.Response('Success'), 401: 'Unauthorized'},
+        security=[{'Bearer': []}],
+        tags=['Distress'],
+    )
+    def get(self, request):
+        return Response(
+            {'success': True, 'data': CARRIAGE_TYPE_DROPDOWN},
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])
@@ -740,6 +781,7 @@ class AppendDistressReportedExcelView(APIView):
             'Append a distress report. Replaces Excel storage with PostgreSQL. '
             'Request body field names are unchanged for frontend compatibility. '
             'Username is taken from the JWT. '
+            'Carriage_Type is required (Rigid or Flexible). '
             'Optional multipart file: `image`/`images` (uploaded to S3; stored as Image_URL).'
         ),
         request_body=DistressReportWriteSerializer,

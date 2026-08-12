@@ -78,6 +78,7 @@ SAMPLE_REQUEST = {
     'direction': ['All'],
     'project_name': ['Abu Road to Swaroopganj'],
     'distress_type': ['All'],
+    'carriage_type': ['All'],
 }
 
 
@@ -245,3 +246,50 @@ class DistressReportFilterContractTests(TestCase):
         for row in response.data[0]:
             self.assertIn('distress_id', row)
             self.assertIsInstance(row['distress_id'], int)
+
+    def test_carriage_type_dropdown(self):
+        response = self.client.get('/api/distress/carriage-types/', **self.auth)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['success'])
+        names = [row['name'] for row in response.data['data']]
+        self.assertEqual(names, ['Flexible', 'Rigid'])
+
+    def test_carriage_type_filter_flexible(self):
+        rigid_seg = RoadSegment.objects.create(
+            project=self.project,
+            chainage_start=651.0,
+            chainage_end=651.5,
+            direction='Increasing',
+            carriage_type='Rigid',
+            lane='L1',
+        )
+        Distress.objects.create(
+            segment=rigid_seg,
+            project=self.project,
+            distress_type=self.dtype,
+            distress_date=date(2026, 7, 20),
+            latitude=24.6,
+            longitude=72.9,
+            count_val=1,
+            length_val=0,
+            area_val=0,
+            width_val=0,
+            depth_val=0,
+        )
+        response = self.client.post(
+            ENDPOINT,
+            {**SAMPLE_REQUEST, 'carriage_type': ['Flexible']},
+            format='json',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.data[0]
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertTrue(all(r['carriage_type'].lower() == 'flexible' for r in rows))
+
+    def test_carriage_type_rejects_invalid(self):
+        serializer = DistressFilterSerializer(
+            data={**SAMPLE_REQUEST, 'carriage_type': ['Concrete']}
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('carriage_type', serializer.errors)

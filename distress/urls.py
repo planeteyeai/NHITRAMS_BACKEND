@@ -5,6 +5,7 @@ from .views import (
     DistressReportFilterNewView,
     DistressFullResponseView,
     DistressPredictFilterView,
+    DistressCarriageTypeMasterView,
     project_dates,
     ChainageSummaryView,
     AppendDistressReportedExcelView,
@@ -16,6 +17,16 @@ from .views_repair import DistressRepairView
 
 urlpatterns = [
     path('api/distress/repair', DistressRepairView.as_view(), name='distress-repair'),
+    path(
+        'api/distress/carriage-types',
+        DistressCarriageTypeMasterView.as_view(),
+        name='distress-carriage-types',
+    ),
+    path(
+        'api/distress/carriage-types/',
+        DistressCarriageTypeMasterView.as_view(),
+        name='distress-carriage-types-slash',
+    ),
     path('api/distress/report/filter/', DistressReportFilterView.as_view(), name='distress-report-filter'),
     path('api/distress/report/summary/', DistressReportSummaryView.as_view(), name='distress-report-summary'),
     path('distress_report_filter/', DistressFullResponseView.as_view(), name='distress-full-response'),
