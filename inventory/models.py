@@ -130,6 +130,8 @@ class InventoryWide(models.Model):
     class Meta:
         managed = False
         db_table = 'inventory_wide'
+        verbose_name = 'Inventory Wide'
+        verbose_name_plural = 'Inventory Wide'
 
     def __str__(self):
         return f"InventoryWide {self.inventory_id}"

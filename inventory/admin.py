@@ -3,7 +3,7 @@ from django.utils.html import format_html
 from django.db.models import Sum, Count
 from django.contrib.admin import SimpleListFilter
 from .models import (
-    Inventory,
+    InventoryWide,
     AssetType,
     SubAssetType,
     Project,
@@ -165,109 +165,181 @@ class RoadSegmentAdmin(admin.ModelAdmin):
 
 
 # ─────────────────────────────────────────────
-# Inventory Admin
+# Inventory Wide Admin (inventory_wide table)
 # ─────────────────────────────────────────────
 
-class AssetTypeListFilter(SimpleListFilter):
-    title = 'Asset Category'
-    parameter_name = 'asset_cat'
+_INVENTORY_WIDE_COUNT_FIELDS = (
+    'trees',
+    'culvert',
+    'street_lights',
+    'bridges',
+    'traffic_signals',
+    'bus_stop',
+    'truck_layby',
+    'toll_plaza',
+    'adjacent_road',
+    'toilet_blocks',
+    'rest_area',
+    'rcc_drain',
+    'fuel_station',
+    'emergency_call_box',
+    'tunnels',
+    'footpath',
+    'junction',
+    'sign_boards',
+    'solar_blinker',
+    'median_plants',
+    'service_road',
+    'km_stones',
+    'crash_barrier',
+    'median_opening',
+    'kerb',
+    'guard_post',
+    'delineators',
+    'pedestrian_guard_rail',
+    'slip_roads',
+    'bus_bays',
+)
+
+
+class InventoryWideAssetTypeFilter(SimpleListFilter):
+    title = 'asset type'
+    parameter_name = 'asset_type'
 
     def lookups(self, request, model_admin):
-        return AssetType.objects.values_list('asset_type_name', 'asset_type_name')
+        values = (
+            InventoryWide.objects.exclude(asset_type__isnull=True)
+            .exclude(asset_type='')
+            .values_list('asset_type', flat=True)
+            .distinct()
+            .order_by('asset_type')
+        )
+        return [(v, v) for v in values]
 
     def queryset(self, request, queryset):
         if self.value():
-            return queryset.filter(asset_type__asset_type_name=self.value())
+            return queryset.filter(asset_type=self.value())
         return queryset
 
 
-@admin.register(Inventory)
-class InventoryAdmin(admin.ModelAdmin):
+@admin.register(InventoryWide)
+class InventoryWideAdmin(admin.ModelAdmin):
     list_display = (
         'inventory_id',
-        'project_name_display',
+        'project_name',
         'asset_type_display',
-        'sub_asset_display',
+        'sub_asset_type',
         'survey_date',
         'count_badge',
-        'segment_range',
+        'chainage_range',
+        'direction',
         'coordinates',
     )
     list_filter = (
-        'asset_type',
+        InventoryWideAssetTypeFilter,
         'survey_date',
-        'segment__direction',
-        AssetTypeListFilter,
-        'project',
+        'direction',
+        'carriage_type',
+        'lane',
+        'project_name',
     )
     search_fields = (
-        'project__project_name',
-        'asset_type__asset_type_name',
-        'sub_asset_type__sub_asset_type_name',
+        'project_name',
+        'asset_type',
+        'sub_asset_type',
+        'direction',
     )
     date_hierarchy = 'survey_date'
-    ordering = ('-survey_date', 'project__project_name')
+    ordering = ('-survey_date', 'project_name')
     list_per_page = 50
-    list_select_related = ('project', 'asset_type', 'sub_asset_type', 'segment')
     readonly_fields = (
-        'inventory_id', 'segment', 'project', 'asset_type', 'sub_asset_type',
-        'survey_date', 'latitude', 'longitude', 'count_val',
+        'inventory_id',
+        'project_name',
+        'chainage_start',
+        'chainage_end',
+        'direction',
+        'asset_type',
+        'sub_asset_type',
+        'survey_date',
+        'latitude',
+        'longitude',
+        'carriage_type',
+        'lane',
+        'image_url',
+        'source',
+        *_INVENTORY_WIDE_COUNT_FIELDS,
     )
 
     fieldsets = (
         ('Identification', {
-            'fields': ('inventory_id', 'project', 'asset_type', 'sub_asset_type', 'survey_date'),
+            'fields': (
+                'inventory_id',
+                'project_name',
+                'asset_type',
+                'sub_asset_type',
+                'survey_date',
+            ),
         }),
-        ('Segment', {
-            'fields': ('segment',),
+        ('Location', {
+            'fields': (
+                'chainage_start',
+                'chainage_end',
+                'direction',
+                'carriage_type',
+                'lane',
+                'latitude',
+                'longitude',
+            ),
         }),
-        ('Count & Location', {
-            'fields': ('count_val', 'latitude', 'longitude'),
+        ('Counts', {
+            'classes': ('collapse',),
+            'fields': _INVENTORY_WIDE_COUNT_FIELDS,
+        }),
+        ('Media / Source', {
+            'fields': ('image_url', 'source'),
         }),
     )
 
-    def project_name_display(self, obj):
-        return obj.project.project_name if obj.project else '—'
-    project_name_display.short_description = 'Project'
-    project_name_display.admin_order_field = 'project__project_name'
-
     def asset_type_display(self, obj):
-        name = obj.asset_type.asset_type_name if obj.asset_type else '—'
+        name = obj.asset_type or '—'
         return format_html(
             '<span style="background:#eaf4fb;color:#2980b9;padding:2px 6px;border-radius:6px;">{}</span>',
-            name
+            name,
         )
     asset_type_display.short_description = 'Asset Type'
-    asset_type_display.admin_order_field = 'asset_type__asset_type_name'
-
-    def sub_asset_display(self, obj):
-        return obj.sub_asset_type.sub_asset_type_name if obj.sub_asset_type else '—'
-    sub_asset_display.short_description = 'Sub-Asset'
+    asset_type_display.admin_order_field = 'asset_type'
 
     def count_badge(self, obj):
-        val = obj.count_val or 0
+        key = (obj.asset_type or '').strip().lower().replace(' ', '_')
+        val = 0
+        if key in _INVENTORY_WIDE_COUNT_FIELDS:
+            val = getattr(obj, key, 0) or 0
+        else:
+            for field in _INVENTORY_WIDE_COUNT_FIELDS:
+                candidate = getattr(obj, field, 0) or 0
+                if candidate:
+                    val = candidate
+                    break
         return format_html(
             '<span style="background:#27ae60;color:#fff;padding:2px 10px;border-radius:12px;font-weight:bold;">{}</span>',
-            int(val)
+            int(val),
         )
     count_badge.short_description = 'Count'
-    count_badge.admin_order_field = 'count_val'
 
-    def segment_range(self, obj):
-        if obj.segment:
-            return format_html(
-                '<small>{} → {} ({})</small>',
-                obj.segment.chainage_start,
-                obj.segment.chainage_end,
-                obj.segment.direction,
-            )
-        return '—'
-    segment_range.short_description = 'Chainage'
+    def chainage_range(self, obj):
+        return format_html(
+            '<small>{} → {} ({})</small>',
+            obj.chainage_start if obj.chainage_start is not None else '—',
+            obj.chainage_end if obj.chainage_end is not None else '—',
+            obj.direction or '—',
+        )
+    chainage_range.short_description = 'Chainage'
 
     def coordinates(self, obj):
         return format_html(
             '<a href="https://maps.google.com/?q={},{}" target="_blank" style="color:#2980b9;">📍 Map</a>',
-            obj.latitude or 0, obj.longitude or 0
+            obj.latitude or 0,
+            obj.longitude or 0,
         )
     coordinates.short_description = 'Location'
 
