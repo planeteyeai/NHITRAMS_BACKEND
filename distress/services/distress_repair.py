@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import FloatField, OuterRef, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.exceptions import APIException, NotFound, ValidationError
 
@@ -84,6 +85,26 @@ def resolved_quantities_by_distress_ids(distress_ids) -> dict[int, float]:
             value = 0.0
         result[int(row['distress_id'])] = value
     return result
+
+
+def annotate_resolved_quantity(queryset):
+    """Annotate each distress row with Sum(quantity_resolved) from repair logs."""
+    repair_total_subquery = (
+        DistressRepairLog.objects.filter(
+            distress_id=OuterRef('distress_id'),
+            status__in=RESOLVED_STATUSES,
+        )
+        .values('distress_id')
+        .annotate(total=Sum('quantity_resolved'))
+        .values('total')[:1]
+    )
+    return queryset.annotate(
+        resolved_quantity_db=Coalesce(
+            Subquery(repair_total_subquery, output_field=FloatField()),
+            Value(0.0),
+            output_field=FloatField(),
+        )
+    )
 
 
 def quantity_breakdown(count_val, resolved: float = 0.0) -> dict[str, float]:

@@ -30,7 +30,9 @@ from .services.inventory_report import (
     update_inventory_report,
 )
 from .services.chainage_lookup import find_nearest_chainage
+from .services.inventory_filter_response import build_inventory_filter_groups
 from .utils import apply_media_uploads_to_payload, upload_dpr_images
+from nhit.caching import CACHE_NS_INVENTORY_FILTER, CACHE_NS_INVENTORY_MASTER, cached_filter_response, cached_get_response
 from django.db import connection, transaction
 from datetime import datetime
 
@@ -50,78 +52,34 @@ class InventoryFilterView(APIView):
 
         data = serializer.validated_data
 
-        queryset = InventoryWide.objects.all()
+        def build_response():
+            queryset = InventoryWide.objects.all()
 
-        if data['project_name']:
-            queryset = queryset.filter(project_name__in=data['project_name'])
+            if data['project_name']:
+                queryset = queryset.filter(project_name__in=data['project_name'])
 
-        if data['asset_type']:
-            queryset = queryset.filter(asset_type__in=data['asset_type'])
+            if data['asset_type']:
+                queryset = queryset.filter(asset_type__in=data['asset_type'])
 
-        if data['date']:
-            queryset = queryset.filter(survey_date=data['date'])
+            if data['date']:
+                queryset = queryset.filter(survey_date=data['date'])
 
-        if data['chainage_start'] is not None:
-            queryset = queryset.filter(chainage_start__gte=data['chainage_start'])
+            if data['chainage_start'] is not None:
+                queryset = queryset.filter(chainage_start__gte=data['chainage_start'])
 
-        if data['chainage_end'] is not None:
-            queryset = queryset.filter(chainage_end__lte=data['chainage_end'])
+            if data['chainage_end'] is not None:
+                queryset = queryset.filter(chainage_end__lte=data['chainage_end'])
 
-        directions = data['direction']
-        if directions and 'all' not in directions:
-            queryset = queryset.filter(direction__in=directions)
+            if data['direction']:
+                queryset = queryset.filter(direction__in=data['direction'])
 
-        results = []
-        for item in queryset.iterator(chunk_size=2000):
-            results.append(
-                {
-                    'project_name': item.project_name,
-                    'chainage_start': item.chainage_start,
-                    'chainage_end': item.chainage_end,
-                    'direction': item.direction,
-                    'asset_type': item.asset_type,
-                    'trees': item.trees,
-                    'culvert': item.culvert,
-                    'street_lights': item.street_lights,
-                    'bridges': item.bridges,
-                    'traffic_signals': item.traffic_signals,
-                    'bus_stop': item.bus_stop,
-                    'truck_layby': item.truck_layby,
-                    'toll_plaza': item.toll_plaza,
-                    'adjacent_road': item.adjacent_road,
-                    'toilet_blocks': item.toilet_blocks,
-                    'rest_area': item.rest_area,
-                    'rcc_drain': item.rcc_drain,
-                    'fuel_station': item.fuel_station,
-                    'emergency_call_box': item.emergency_call_box,
-                    'tunnels': item.tunnels,
-                    'footpath': item.footpath,
-                    'junction': item.junction,
-                    'sign_boards': item.sign_boards,
-                    'solar_blinker': item.solar_blinker,
-                    'median_plants': item.median_plants,
-                    'service_road': item.service_road,
-                    'km_stones': item.km_stones,
-                    'crash_barrier': item.crash_barrier,
-                    'median_opening': str(int(item.median_opening or 0)),
-                    'kerb': item.kerb,
-                    'guard_post': item.guard_post,
-                    'delineators': item.delineators,
-                    'pedestrian_guard_rail': item.pedestrian_guard_rail,
-                    'slip_roads': item.slip_roads,
-                    'bus_bays': item.bus_bays,
-                    'latitude': item.latitude,
-                    'longitude': item.longitude,
-                    'date': item.survey_date,
-                    'sub_asset_type': item.sub_asset_type,
-                    'carriage_type': item.carriage_type or 'Flexible',
-                    'lane': item.lane or 'L2',
-                    'image_url': item.image_url or '',
-                    'source': item.source or '',
-                }
-            )
+            return build_inventory_filter_groups(queryset)
 
-        return Response(results, status=status.HTTP_200_OK)
+        return cached_filter_response(
+            namespace=CACHE_NS_INVENTORY_FILTER,
+            payload=data,
+            builder=build_response,
+        )
 
 class HealthCheckView(APIView):
     @swagger_auto_schema(
@@ -317,9 +275,10 @@ class InventoryMasterView(APIView):
         tags=['Inventory Reports'],
     )
     def get(self, request):
-        return Response(
-            {'success': True, 'data': get_inventory_master()},
-            status=status.HTTP_200_OK,
+        return cached_get_response(
+            namespace=CACHE_NS_INVENTORY_MASTER,
+            payload={},
+            builder=lambda: {'success': True, 'data': get_inventory_master()},
         )
 
 

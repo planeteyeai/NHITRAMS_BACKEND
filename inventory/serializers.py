@@ -155,6 +155,13 @@ class AutoFetchChainageResponseSerializer(serializers.Serializer):
     nearest_longitude = serializers.FloatField()
 
 
+def _list_means_all(values: list[str] | None) -> bool:
+    """True when the list includes 'all' (any casing) meaning no filter."""
+    if not values:
+        return False
+    return any(str(value).strip().casefold() == 'all' for value in values)
+
+
 class InventoryFilterSerializer(serializers.Serializer):
     chainage_start = serializers.FloatField()
     chainage_end = serializers.FloatField()
@@ -172,6 +179,10 @@ class InventoryFilterSerializer(serializers.Serializer):
     def validate(self, data):
         if data['chainage_start'] > data['chainage_end']:
             raise serializers.ValidationError("chainage_start must be less than or equal to chainage_end")
+        if _list_means_all(data.get('direction')):
+            data['direction'] = []
+        if _list_means_all(data.get('asset_type')):
+            data['asset_type'] = []
         return data
 
 class InventoryResponseSerializer(serializers.Serializer):

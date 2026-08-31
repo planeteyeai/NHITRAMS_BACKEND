@@ -45,15 +45,25 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework',
     'drf_yasg',
+    'nhit.caching',
     'distress',
     'inventory',
     'pis',
     'traffic',
+    'ais',
     'pavement',
     'roadside',
     'authentication',
     'reports',
     'google_sheet_sync',
+    'labour',
+    'supplier',
+    'materials',
+    'transfer_stocks',
+    'equipments',
+    'purchase_invoices',
+    'bulk_stock',
+    'work_orders',
 ]
 
 # Local-only Neon test UI (folder is gitignored; skip if missing).
@@ -196,6 +206,30 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
+# Cache (Redis optional — app runs normally without REDIS_URL)
+_REDIS_URL = os.environ.get('REDIS_URL', '').strip()
+NHIT_CACHE_ENABLED = bool(_REDIS_URL)
+
+if _REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': _REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+                'IGNORE_EXCEPTIONS': True,
+            },
+            'KEY_PREFIX': 'nhit',
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.dummy.DummyCache',
+        }
+    }
+
+
 # CORS / CSRF (frontend embeds AI Identifier in NHIT RAMS)
 CORS_ALLOW_ALL_ORIGINS = _env_bool('CORS_ALLOW_ALL_ORIGINS', default=DEBUG)
 CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS')
@@ -278,6 +312,11 @@ LOGGING = {
         'django.request': {
             'handlers': ['console'],
             'level': 'ERROR',
+            'propagate': False,
+        },
+        'nhit.cache': {
+            'handlers': ['console'],
+            'level': os.environ.get('NHIT_CACHE_LOG_LEVEL', 'INFO'),
             'propagate': False,
         },
     },

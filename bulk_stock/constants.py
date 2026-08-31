@@ -1,0 +1,12 @@
+"""Bulk Stock Management constants."""
+
+TRANSACTION_TYPE_INWARD = 'INWARD'
+TRANSACTION_TYPE_OUTWARD = 'OUTWARD'
+
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+
+SORTABLE_FIELDS = frozenset({'id', 'created_at', 'updated_at'})
+
+QUANTITY_MAX_DIGITS = 18
+QUANTITY_DECIMAL_PLACES = 4

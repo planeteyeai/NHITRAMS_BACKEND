@@ -776,3 +776,247 @@ class DPRReportAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(response.data['success'])
 
+
+class InventoryFilterSerializerTests(TestCase):
+    """inventory_filter accepts All/all for direction and asset_type."""
+
+    def _base_payload(self, **overrides):
+        payload = {
+            'chainage_start': 0,
+            'chainage_end': 100,
+            'date': '2026-04-20',
+            'direction': ['Decreasing'],
+            'project_name': ['Agra Bypass Road'],
+            'asset_type': ['Culvert'],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_all_keyword_case_insensitive_for_direction_and_asset_type(self):
+        from inventory.serializers import InventoryFilterSerializer
+
+        for direction in ('all', 'All', 'ALL'):
+            for asset_type in ('all', 'All', 'ALL'):
+                serializer = InventoryFilterSerializer(
+                    data=self._base_payload(direction=[direction], asset_type=[asset_type])
+                )
+                self.assertTrue(serializer.is_valid(), serializer.errors)
+                self.assertEqual(serializer.validated_data['direction'], [])
+                self.assertEqual(serializer.validated_data['asset_type'], [])
+
+    def test_specific_filters_unaffected_when_all_not_present(self):
+        from inventory.serializers import InventoryFilterSerializer
+
+        serializer = InventoryFilterSerializer(data=self._base_payload())
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data['direction'], ['Decreasing'])
+        self.assertEqual(serializer.validated_data['asset_type'], ['Culvert'])
+
+    def test_all_in_either_list_clears_that_filter_only(self):
+        from inventory.serializers import InventoryFilterSerializer
+
+        serializer = InventoryFilterSerializer(
+            data=self._base_payload(direction=['All'], asset_type=['Culvert'])
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data['direction'], [])
+        self.assertEqual(serializer.validated_data['asset_type'], ['Culvert'])
+
+
+class InventoryFilterResponseTests(TestCase):
+    """NHIT-compatible sparse serialization for inventory_filter."""
+
+    def test_sparse_row_omits_zero_asset_fields_and_median_lane_rules(self):
+        from datetime import date
+        from types import SimpleNamespace
+
+        from inventory.services.inventory_filter_response import serialize_inventory_wide_row
+
+        item = SimpleNamespace(
+            project_name='Agra Bypass Road',
+            chainage_start=32.8,
+            chainage_end=32.9,
+            direction='Median',
+            asset_type='Street Lights',
+            trees=0.0,
+            culvert=0.0,
+            street_lights=1.0,
+            bridges=0.0,
+            traffic_signals=0.0,
+            bus_stop=0.0,
+            truck_layby=0.0,
+            toll_plaza=0.0,
+            adjacent_road=0.0,
+            toilet_blocks=0.0,
+            rest_area=0.0,
+            rcc_drain=0.0,
+            fuel_station=0.0,
+            emergency_call_box=0.0,
+            tunnels=0.0,
+            footpath=0.0,
+            junction=0.0,
+            sign_boards=0.0,
+            solar_blinker=0.0,
+            median_plants=0.0,
+            service_road=0.0,
+            km_stones=0.0,
+            crash_barrier=0.0,
+            median_opening=0.0,
+            kerb=0.0,
+            guard_post=0.0,
+            delineators=0.0,
+            pedestrian_guard_rail=0.0,
+            slip_roads=0.0,
+            bus_bays=0.0,
+            latitude=27.06559,
+            longitude=77.983,
+            survey_date=date(2026, 4, 20),
+            sub_asset_type='ignored',
+            carriage_type='Flexible',
+            lane='L3',
+            image_url='http://example.com/x.jpg',
+            source='excel_import',
+        )
+
+        row = serialize_inventory_wide_row(item)
+
+        self.assertEqual(row['asset_type'], 'Street Lights')
+        self.assertEqual(row['street_lights'], 1)
+        self.assertEqual(row['latitude'], '27.06559')
+        self.assertEqual(row['longitude'], '77.983')
+        self.assertEqual(row['source'], 'SAR')
+        self.assertNotIn('trees', row)
+        self.assertNotIn('carriage_type', row)
+        self.assertNotIn('lane', row)
+        self.assertNotIn('sub_asset_type', row)
+        self.assertNotIn('image_url', row)
+
+    def test_omits_chainage_start_for_first_segment(self):
+        from datetime import date
+        from types import SimpleNamespace
+
+        from inventory.services.inventory_filter_response import serialize_inventory_wide_row
+
+        item = SimpleNamespace(
+            project_name='Agra Bypass Road',
+            chainage_start=0.0,
+            chainage_end=0.1,
+            direction='Increasing',
+            asset_type='Culvert',
+            trees=0.0,
+            culvert=1.0,
+            bridges=0.0,
+            traffic_signals=0.0,
+            bus_stop=0.0,
+            truck_layby=0.0,
+            toll_plaza=0.0,
+            adjacent_road=0.0,
+            toilet_blocks=0.0,
+            rest_area=0.0,
+            rcc_drain=0.0,
+            fuel_station=0.0,
+            emergency_call_box=0.0,
+            tunnels=0.0,
+            footpath=0.0,
+            junction=0.0,
+            street_lights=0.0,
+            sign_boards=0.0,
+            solar_blinker=0.0,
+            median_plants=0.0,
+            service_road=0.0,
+            km_stones=0.0,
+            crash_barrier=0.0,
+            median_opening=0.0,
+            kerb=0.0,
+            guard_post=0.0,
+            delineators=0.0,
+            pedestrian_guard_rail=0.0,
+            slip_roads=0.0,
+            bus_bays=0.0,
+            latitude=27.26094,
+            longitude=77.81572,
+            survey_date=date(2026, 4, 20),
+            sub_asset_type='',
+            carriage_type='Flexible',
+            lane='L3',
+            image_url='',
+            source='excel_import',
+        )
+
+        row = serialize_inventory_wide_row(item)
+
+        self.assertNotIn('chainage_start', row)
+        self.assertEqual(row['chainage_end'], 0.1)
+        self.assertEqual(row['culvert'], 1)
+
+    def test_uses_dms_override_for_sign_boards_with_zero_coordinates(self):
+        from datetime import date
+        from types import SimpleNamespace
+
+        from inventory.services.inventory_filter_response import serialize_inventory_wide_row
+
+        item = SimpleNamespace(
+            project_name='Agra Bypass Road',
+            chainage_start=1.0,
+            chainage_end=1.1,
+            direction='Increasing',
+            asset_type='Sign Boards',
+            trees=0.0,
+            culvert=0.0,
+            street_lights=0.0,
+            bridges=0.0,
+            traffic_signals=0.0,
+            bus_stop=0.0,
+            truck_layby=0.0,
+            toll_plaza=0.0,
+            adjacent_road=0.0,
+            toilet_blocks=0.0,
+            rest_area=0.0,
+            rcc_drain=0.0,
+            fuel_station=0.0,
+            emergency_call_box=0.0,
+            tunnels=0.0,
+            footpath=0.0,
+            junction=0.0,
+            sign_boards=1.0,
+            solar_blinker=0.0,
+            median_plants=0.0,
+            service_road=0.0,
+            km_stones=0.0,
+            crash_barrier=0.0,
+            median_opening=0.0,
+            kerb=0.0,
+            guard_post=0.0,
+            delineators=0.0,
+            pedestrian_guard_rail=0.0,
+            slip_roads=0.0,
+            bus_bays=0.0,
+            latitude=0.0,
+            longitude=0.0,
+            survey_date=date(2026, 4, 20),
+            sub_asset_type='',
+            carriage_type='Flexible',
+            lane='L2',
+            image_url='',
+            source='excel_import',
+        )
+
+        row = serialize_inventory_wide_row(item)
+
+        self.assertEqual(row['latitude'], '27°15\'12.24"N')
+        self.assertEqual(row['longitude'], '77°48\'36.01"E')
+        self.assertEqual(row['sign_boards'], 1)
+
+    def test_groups_consecutive_rows_with_same_coordinates(self):
+        from inventory.services.inventory_filter_response import group_serialized_rows
+
+        rows = [
+            {'latitude': '27.1', 'longitude': '77.1', 'direction': 'Median'},
+            {'latitude': '27.1', 'longitude': '77.1', 'direction': 'Increasing'},
+            {'latitude': '27.2', 'longitude': '77.2', 'direction': 'Decreasing'},
+        ]
+
+        groups = group_serialized_rows(rows)
+
+        self.assertEqual(groups, [rows[:2], [rows[2]]])
+

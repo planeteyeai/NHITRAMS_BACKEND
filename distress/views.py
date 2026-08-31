@@ -23,9 +23,11 @@ from inventory.utils import apply_media_uploads_to_payload
 from collections import defaultdict
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from .services.distress_repair import (
+    annotate_resolved_quantity,
     quantity_breakdown,
     resolved_quantities_by_distress_ids,
 )
+from nhit.caching import CACHE_NS_DISTRESS_REPORT_FILTER, cached_filter_response
 
 logger = logging.getLogger(__name__)
 
@@ -106,24 +108,21 @@ class DistressReportFilterView(APIView):
         if 'direction' in data and data['direction']:
             queryset = queryset.filter(segment__direction__in=data['direction'])
 
-        # Debug: Log the generated SQL query
-        logger.debug(f"Generated SQL: {queryset.query}")
+        logger.debug('Generated SQL: %s', queryset.query)
 
-        # Aggregate
         results = queryset.values(
             'project__project_name',
             'segment__segment_id',
             'segment__chainage_start',
             'segment__chainage_end',
             'segment__direction',
-            'distress_type__distress_type_name'
+            'distress_type__distress_type_name',
         ).annotate(
             total_count=Sum('count_val'),
             latitude=Avg('latitude'),
-            longitude=Avg('longitude')
+            longitude=Avg('longitude'),
         ).order_by('project__project_name', 'segment__segment_id')
 
-        # Serialize results
         response_data = []
         for item in results:
             response_data.append({
@@ -332,51 +331,6 @@ class DistressFullResponseView(APIView):
 
         data = serializer.validated_data
 
-        # Build queryset
-        queryset = Distress.objects.select_related('project', 'distress_type', 'segment')
-
-        # Apply filters
-        if (
-            'project_name' in data
-            and data['project_name']
-            and not any(p.lower() == 'all' for p in data['project_name'])
-        ):
-            q_objects = Q()
-            for name in data['project_name']:
-                q_objects |= Q(project__project_name__iexact=name)
-            queryset = queryset.filter(q_objects)
-
-        if (
-            'distress_type' in data
-            and data['distress_type']
-            and not any(dt.lower() == 'all' for dt in data['distress_type'])
-        ):
-            q_objects = Q()
-            for dtype in data['distress_type']:
-                q_objects |= Q(distress_type__distress_type_name__iexact=dtype)
-            queryset = queryset.filter(q_objects)
-
-        if 'date' in data:
-            queryset = queryset.filter(distress_date=data['date'])
-
-        if 'chainage_start' in data or 'chainage_end' in data:
-            chainage_filters = Q()
-            if 'chainage_start' in data:
-                chainage_filters &= Q(segment__chainage_end__gte=data['chainage_start'])
-            if 'chainage_end' in data:
-                chainage_filters &= Q(segment__chainage_start__lte=data['chainage_end'])
-            queryset = queryset.filter(chainage_filters)
-
-        if (
-            'direction' in data
-            and data['direction']
-            and not any(d.lower() == 'all' for d in data['direction'])
-        ):
-            queryset = queryset.filter(segment__direction__in=data['direction'])
-
-        queryset = _apply_carriage_type_filter(queryset, data)
-
-        # List of distress type fields (frontend contract keys)
         distress_type_fields = [
             'pothole', 'oblique_crack', 'edge_break', 'patching', 'bleeding', 'hotspots',
             'alligator_crack', 'roughness', 'repair', 'block_crack', 'rutting',
@@ -389,48 +343,92 @@ class DistressFullResponseView(APIView):
             'polished_surface/_glazing', 'depression',
         ]
 
-        final_data = []
-        rows = list(queryset)
-        resolved_map = resolved_quantities_by_distress_ids(
-            [obj.distress_id for obj in rows]
-        )
-        for obj in rows:
-            distress_type_name = obj.distress_type.distress_type_name.lower().replace('_', ' ')
-            breakdown = quantity_breakdown(
-                obj.count_val,
-                resolved_map.get(obj.distress_id, 0.0),
-            )
-            display_qty = breakdown['remaining_quantity']
-            item = {
-                'distress_id': obj.distress_id,
-                'latitude': _json_safe_float(obj.latitude),
-                'longitude': _json_safe_float(obj.longitude),
-                'chainage_start': _json_safe_float(obj.segment.chainage_start),
-                'chainage_end': _json_safe_float(obj.segment.chainage_end),
-                'project_name': obj.project.project_name,
-                'distress_type': obj.distress_type.distress_type_name.title(),
-                'direction': obj.segment.direction,
-                'total_distress': display_qty,
-                'predicted_quantity': breakdown['predicted_quantity'],
-                'resolved_quantity': breakdown['resolved_quantity'],
-                'remaining_quantity': breakdown['remaining_quantity'],
-                'length': _json_safe_float(obj.length_val),
-                'area': _json_safe_float(obj.area_val),
-                'carriage_type': obj.segment.carriage_type or "",
-                'width': _json_safe_float(obj.width_val),
-                'depth': _json_safe_float(obj.depth_val),
-                'lane': obj.segment.lane or "",
-                'date': str(obj.distress_date) if obj.distress_date else None,
-                # No image column on production ``distress``; keep contract key.
-                'image_url': '',
-            }
-            # Set distress type specific fields
-            for field in distress_type_fields:
-                field_normalized = field.lower().replace('_', ' ')
-                item[field] = display_qty if distress_type_name == field_normalized else 0
-            final_data.append(item)
+        def build_response():
+            queryset = Distress.objects.select_related('project', 'distress_type', 'segment')
 
-        return Response([final_data])
+            if (
+                'project_name' in data
+                and data['project_name']
+                and not any(p.lower() == 'all' for p in data['project_name'])
+            ):
+                q_objects = Q()
+                for name in data['project_name']:
+                    q_objects |= Q(project__project_name__iexact=name)
+                queryset = queryset.filter(q_objects)
+
+            if (
+                'distress_type' in data
+                and data['distress_type']
+                and not any(dt.lower() == 'all' for dt in data['distress_type'])
+            ):
+                q_objects = Q()
+                for dtype in data['distress_type']:
+                    q_objects |= Q(distress_type__distress_type_name__iexact=dtype)
+                queryset = queryset.filter(q_objects)
+
+            if 'date' in data:
+                queryset = queryset.filter(distress_date=data['date'])
+
+            if 'chainage_start' in data or 'chainage_end' in data:
+                chainage_filters = Q()
+                if 'chainage_start' in data:
+                    chainage_filters &= Q(segment__chainage_end__gte=data['chainage_start'])
+                if 'chainage_end' in data:
+                    chainage_filters &= Q(segment__chainage_start__lte=data['chainage_end'])
+                queryset = queryset.filter(chainage_filters)
+
+            if (
+                'direction' in data
+                and data['direction']
+                and not any(d.lower() == 'all' for d in data['direction'])
+            ):
+                queryset = queryset.filter(segment__direction__in=data['direction'])
+
+            queryset = _apply_carriage_type_filter(queryset, data)
+            queryset = annotate_resolved_quantity(queryset)
+
+            final_data = []
+            rows = list(queryset)
+            for obj in rows:
+                distress_type_name = obj.distress_type.distress_type_name.lower().replace('_', ' ')
+                breakdown = quantity_breakdown(
+                    obj.count_val,
+                    obj.resolved_quantity_db,
+                )
+                display_qty = breakdown['remaining_quantity']
+                item = {
+                    'distress_id': obj.distress_id,
+                    'latitude': _json_safe_float(obj.latitude),
+                    'longitude': _json_safe_float(obj.longitude),
+                    'chainage_start': _json_safe_float(obj.segment.chainage_start),
+                    'chainage_end': _json_safe_float(obj.segment.chainage_end),
+                    'project_name': obj.project.project_name,
+                    'distress_type': obj.distress_type.distress_type_name.title(),
+                    'direction': obj.segment.direction,
+                    'total_distress': display_qty,
+                    'predicted_quantity': breakdown['predicted_quantity'],
+                    'resolved_quantity': breakdown['resolved_quantity'],
+                    'remaining_quantity': breakdown['remaining_quantity'],
+                    'length': _json_safe_float(obj.length_val),
+                    'area': _json_safe_float(obj.area_val),
+                    'carriage_type': obj.segment.carriage_type or '',
+                    'width': _json_safe_float(obj.width_val),
+                    'depth': _json_safe_float(obj.depth_val),
+                    'lane': obj.segment.lane or '',
+                    'date': str(obj.distress_date) if obj.distress_date else None,
+                    'image_url': '',
+                }
+                for field in distress_type_fields:
+                    field_normalized = field.lower().replace('_', ' ')
+                    item[field] = display_qty if distress_type_name == field_normalized else 0
+                final_data.append(item)
+            return [final_data]
+
+        return cached_filter_response(
+            namespace=CACHE_NS_DISTRESS_REPORT_FILTER,
+            payload=data,
+            builder=build_response,
+        )
 
 
 class DistressPredictFilterView(APIView):
