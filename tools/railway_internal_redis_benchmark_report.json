@@ -1,0 +1,11 @@
+{
+  "verdict": "BENCHMARK INVALID",
+  "benchmark_valid": false,
+  "error": "Redis networking is PUBLIC, expected INTERNAL",
+  "environment": {
+    "django": "6.0",
+    "database": "postgresql",
+    "redis_status": "CONNECTED",
+    "redis_networking": "PUBLIC"
+  }
+}
