@@ -66,9 +66,18 @@ COPY --chown=appuser:appuser inventory ./inventory
 COPY --chown=appuser:appuser pdf ./pdf
 COPY --chown=appuser:appuser pis ./pis
 COPY --chown=appuser:appuser traffic ./traffic
+COPY --chown=appuser:appuser ais ./ais
 COPY --chown=appuser:appuser pavement ./pavement
 COPY --chown=appuser:appuser roadside ./roadside
 COPY --chown=appuser:appuser google_sheet_sync ./google_sheet_sync
+COPY --chown=appuser:appuser labour ./labour
+COPY --chown=appuser:appuser supplier ./supplier
+COPY --chown=appuser:appuser materials ./materials
+COPY --chown=appuser:appuser transfer_stocks ./transfer_stocks
+COPY --chown=appuser:appuser equipments ./equipments
+COPY --chown=appuser:appuser purchase_invoices ./purchase_invoices
+COPY --chown=appuser:appuser bulk_stock ./bulk_stock
+COPY --chown=appuser:appuser work_orders ./work_orders
 COPY --chown=appuser:appuser docker/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh \
