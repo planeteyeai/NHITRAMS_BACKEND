@@ -1020,3 +1020,73 @@ class InventoryFilterResponseTests(TestCase):
 
         self.assertEqual(groups, [rows[:2], [rows[2]]])
 
+
+class InventoryFilterGzipMiddlewareTests(TestCase):
+    """GZipMiddleware transparently compresses inventory_filter without changing JSON."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.payload = {
+            'chainage_start': 0,
+            'chainage_end': 1381,
+            'date': '2026-04-20',
+            'direction': ['All'],
+            'project_name': ['Agra Bypass Road'],
+            'asset_type': ['All'],
+        }
+        # Large enough payload for GZipMiddleware (>200 bytes) without hitting inventory_wide.
+        self.mock_response = [
+            [
+                {
+                    'project_name': 'Agra Bypass Road',
+                    'chainage_start': float(i),
+                    'chainage_end': float(i) + 0.1,
+                    'direction': 'Increasing',
+                    'asset_type': 'Trees',
+                    'latitude': '27.1',
+                    'longitude': '77.1',
+                    'date': '2026-04-20',
+                    'trees': 1,
+                }
+                for i in range(100)
+            ]
+        ]
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_gzip_response_matches_uncompressed_body(self, mock_build):
+        import gzip
+
+        mock_build.return_value = self.mock_response
+
+        plain = self.client.post(
+            '/inventory_filter/',
+            self.payload,
+            content_type='application/json',
+        )
+        compressed = self.client.post(
+            '/inventory_filter/',
+            self.payload,
+            content_type='application/json',
+            HTTP_ACCEPT_ENCODING='gzip',
+        )
+
+        self.assertEqual(plain.status_code, status.HTTP_200_OK)
+        self.assertEqual(compressed.status_code, status.HTTP_200_OK)
+        self.assertEqual(compressed.get('Content-Encoding'), 'gzip')
+
+        decompressed = gzip.decompress(compressed.content)
+        self.assertEqual(json.loads(decompressed), json.loads(plain.content))
+
+    def test_error_response_not_gzip_corrupted(self):
+        bad_payload = dict(self.payload)
+        bad_payload.pop('date')
+        response = self.client.post(
+            '/inventory_filter/',
+            bad_payload,
+            content_type='application/json',
+            HTTP_ACCEPT_ENCODING='gzip',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotEqual(response.get('Content-Encoding'), 'gzip')
+
