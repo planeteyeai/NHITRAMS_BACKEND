@@ -7,6 +7,22 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from inventory.models import InventoryWide
 
+# NHIT production default when page_size is omitted from POST body.
+DEFAULT_INVENTORY_FILTER_PAGE_SIZE = 15000
+
+INVENTORY_FILTER_HEADER_PAGINATED = 'X-Inventory-Paginated'
+INVENTORY_FILTER_HEADER_PAGE = 'X-Inventory-Page'
+INVENTORY_FILTER_HEADER_PAGE_SIZE = 'X-Inventory-Page-Size'
+INVENTORY_FILTER_HEADER_ROW_COUNT = 'X-Inventory-Row-Count'
+INVENTORY_FILTER_HEADER_HAS_MORE = 'X-Inventory-Has-More'
+
+INVENTORY_FILTER_EXPOSED_HEADERS = [
+    INVENTORY_FILTER_HEADER_PAGINATED,
+    INVENTORY_FILTER_HEADER_PAGE,
+    INVENTORY_FILTER_HEADER_PAGE_SIZE,
+    INVENTORY_FILTER_HEADER_ROW_COUNT,
+    INVENTORY_FILTER_HEADER_HAS_MORE,
+]
 ASSET_TYPE_FIELD_MAP = {
     'Trees': 'trees',
     'Culvert': 'culvert',
@@ -205,12 +221,20 @@ def group_serialized_rows(rows: list[dict]) -> list[list[dict]]:
     return groups
 
 
-def build_inventory_filter_groups(queryset) -> list[list[dict]]:
-    """Return NHIT-style nested arrays for inventory_filter."""
-    # list() is faster than iterator() against remote PostgreSQL (Neon): server-side
-    # cursors add round-trip overhead without benefit for ~1.5k rows.
-    items = list(
-        queryset.only(*INVENTORY_FILTER_ONLY_FIELDS).order_by('-inventory_id')
-    )
+def build_inventory_filter_groups(
+    queryset,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> list[list[dict]]:
+    """Return NHIT-style nested arrays for one page of inventory_filter rows."""
+    ordered = queryset.only(*INVENTORY_FILTER_ONLY_FIELDS).order_by('-inventory_id')
+    if limit is not None:
+        items = list(ordered[offset : offset + limit])
+    elif offset:
+        items = list(ordered[offset:])
+    else:
+        items = list(ordered)
+
     rows = [serialize_inventory_wide_row(item) for item in items]
     return group_serialized_rows(rows)

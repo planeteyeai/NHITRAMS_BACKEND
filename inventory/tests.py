@@ -1033,6 +1033,8 @@ class InventoryFilterGzipMiddlewareTests(TestCase):
             'direction': ['All'],
             'project_name': ['Agra Bypass Road'],
             'asset_type': ['All'],
+            'page': 1,
+            'page_size': 5000,
         }
         # Large enough payload for GZipMiddleware (>200 bytes) without hitting inventory_wide.
         self.mock_response = [
@@ -1053,11 +1055,14 @@ class InventoryFilterGzipMiddlewareTests(TestCase):
         ]
 
     @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
     @override_settings(NHIT_CACHE_ENABLED=False)
-    def test_gzip_response_matches_uncompressed_body(self, mock_build):
+    def test_gzip_response_matches_uncompressed_body(self, mock_build_qs, mock_build_groups):
         import gzip
 
-        mock_build.return_value = self.mock_response
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 10000
+        mock_build_groups.return_value = self.mock_response
 
         plain = self.client.post(
             '/inventory_filter/',
@@ -1089,4 +1094,117 @@ class InventoryFilterGzipMiddlewareTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertNotEqual(response.get('Content-Encoding'), 'gzip')
+
+
+class InventoryFilterPaginationTests(TestCase):
+    """NHIT-compatible pagination headers and page slicing for inventory_filter."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.payload = {
+            'chainage_start': 0,
+            'chainage_end': 99999,
+            'date': '2026-04-20',
+            'direction': ['All'],
+            'project_name': ['Agra Bypass Road'],
+            'asset_type': ['All'],
+            'page': 1,
+            'page_size': 5000,
+        }
+        self.mock_groups = [[{'project_name': 'Agra Bypass Road', 'chainage_end': 1.0}]]
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_page_one_headers_and_slice(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 12000
+        mock_build_groups.return_value = self.mock_groups
+
+        response = self.client.post('/inventory_filter/', self.payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, self.mock_groups)
+        self.assertEqual(response['X-Inventory-Paginated'], 'true')
+        self.assertEqual(response['X-Inventory-Page'], '1')
+        self.assertEqual(response['X-Inventory-Page-Size'], '5000')
+        self.assertEqual(response['X-Inventory-Row-Count'], '12000')
+        self.assertEqual(response['X-Inventory-Has-More'], 'true')
+        mock_build_groups.assert_called_once_with(mock_qs, offset=0, limit=5000)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_middle_page_same_total_count(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 12000
+        mock_build_groups.return_value = self.mock_groups
+
+        payload = {**self.payload, 'page': 2}
+        response = self.client.post('/inventory_filter/', payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['X-Inventory-Page'], '2')
+        self.assertEqual(response['X-Inventory-Row-Count'], '12000')
+        self.assertEqual(response['X-Inventory-Has-More'], 'true')
+        mock_build_groups.assert_called_once_with(mock_qs, offset=5000, limit=5000)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_final_page_has_more_false(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 9000
+        mock_build_groups.return_value = self.mock_groups
+
+        payload = {**self.payload, 'page': 2}
+        response = self.client.post('/inventory_filter/', payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['X-Inventory-Has-More'], 'false')
+        mock_build_groups.assert_called_once_with(mock_qs, offset=5000, limit=5000)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_beyond_final_page_returns_no_match(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 9000
+
+        payload = {**self.payload, 'page': 3}
+        response = self.client.post('/inventory_filter/', payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {'message': 'No match'})
+        mock_build_groups.assert_not_called()
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_empty_dataset_page_one_returns_no_match(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 0
+
+        response = self.client.post('/inventory_filter/', self.payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {'message': 'No match'})
+        mock_build_groups.assert_not_called()
+
+    def test_default_page_size_matches_nhit(self):
+        from inventory.serializers import InventoryFilterSerializer
+
+        serializer = InventoryFilterSerializer(
+            data={
+                'chainage_start': 0,
+                'chainage_end': 100,
+                'date': '2026-04-20',
+                'direction': ['All'],
+                'project_name': ['Agra Bypass Road'],
+                'asset_type': ['All'],
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data['page'], 1)
+        self.assertEqual(serializer.validated_data['page_size'], 15000)
 

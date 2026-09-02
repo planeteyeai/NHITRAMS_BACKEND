@@ -236,6 +236,15 @@ CORS_ALLOW_ALL_ORIGINS = _env_bool('CORS_ALLOW_ALL_ORIGINS', default=DEBUG)
 CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_CREDENTIALS = _env_bool('CORS_ALLOW_CREDENTIALS', default=True)
 
+# Expose inventory_filter pagination headers to browser clients (NHIT parity).
+CORS_EXPOSE_HEADERS = [
+    'X-Inventory-Paginated',
+    'X-Inventory-Page',
+    'X-Inventory-Page-Size',
+    'X-Inventory-Row-Count',
+    'X-Inventory-Has-More',
+]
+
 CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS')
 
 # Behind reverse proxies (Docker / cloud load balancers)

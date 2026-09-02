@@ -30,7 +30,16 @@ from .services.inventory_report import (
     update_inventory_report,
 )
 from .services.chainage_lookup import find_nearest_chainage
-from .services.inventory_filter_response import build_inventory_filter_groups
+from .services.inventory_filter_queryset import build_inventory_filter_queryset
+from .services.inventory_filter_response import (
+    INVENTORY_FILTER_EXPOSED_HEADERS,
+    INVENTORY_FILTER_HEADER_HAS_MORE,
+    INVENTORY_FILTER_HEADER_PAGE,
+    INVENTORY_FILTER_HEADER_PAGE_SIZE,
+    INVENTORY_FILTER_HEADER_PAGINATED,
+    INVENTORY_FILTER_HEADER_ROW_COUNT,
+    build_inventory_filter_groups,
+)
 from .utils import apply_media_uploads_to_payload, upload_dpr_images
 from nhit.caching import CACHE_NS_INVENTORY_FILTER, CACHE_NS_INVENTORY_MASTER, cached_filter_response, cached_get_response
 from django.db import connection, transaction
@@ -51,35 +60,36 @@ class InventoryFilterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
+        page = data['page']
+        page_size = data['page_size']
+        offset = (page - 1) * page_size
+
+        queryset = build_inventory_filter_queryset(data)
+        total_count = queryset.count()
+
+        if offset >= total_count:
+            return Response({'message': 'No match'}, status=status.HTTP_200_OK)
 
         def build_response():
-            queryset = InventoryWide.objects.all()
+            return build_inventory_filter_groups(
+                queryset,
+                offset=offset,
+                limit=page_size,
+            )
 
-            if data['project_name']:
-                queryset = queryset.filter(project_name__in=data['project_name'])
-
-            if data['asset_type']:
-                queryset = queryset.filter(asset_type__in=data['asset_type'])
-
-            if data['date']:
-                queryset = queryset.filter(survey_date=data['date'])
-
-            if data['chainage_start'] is not None:
-                queryset = queryset.filter(chainage_start__gte=data['chainage_start'])
-
-            if data['chainage_end'] is not None:
-                queryset = queryset.filter(chainage_end__lte=data['chainage_end'])
-
-            if data['direction']:
-                queryset = queryset.filter(direction__in=data['direction'])
-
-            return build_inventory_filter_groups(queryset)
-
-        return cached_filter_response(
+        response = cached_filter_response(
             namespace=CACHE_NS_INVENTORY_FILTER,
             payload=data,
             builder=build_response,
         )
+
+        has_more = (offset + page_size) < total_count
+        response[INVENTORY_FILTER_HEADER_PAGINATED] = 'true'
+        response[INVENTORY_FILTER_HEADER_PAGE] = str(page)
+        response[INVENTORY_FILTER_HEADER_PAGE_SIZE] = str(page_size)
+        response[INVENTORY_FILTER_HEADER_ROW_COUNT] = str(total_count)
+        response[INVENTORY_FILTER_HEADER_HAS_MORE] = 'true' if has_more else 'false'
+        return response
 
 class HealthCheckView(APIView):
     @swagger_auto_schema(

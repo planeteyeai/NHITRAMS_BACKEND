@@ -175,6 +175,8 @@ class InventoryFilterSerializer(serializers.Serializer):
     asset_type = serializers.ListField(
         child=serializers.CharField(max_length=100)
     )
+    page = serializers.IntegerField(required=False, default=1, min_value=1)
+    page_size = serializers.IntegerField(required=False, default=15000, min_value=1)
 
     def validate(self, data):
         if data['chainage_start'] > data['chainage_end']:
