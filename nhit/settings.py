@@ -207,9 +207,23 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-# Cache (Redis optional — app runs normally without REDIS_URL)
-_REDIS_URL = os.environ.get('REDIS_URL', '').strip()
+# Cache (Redis optional — app runs normally without Redis)
+# Railway: prefer REDIS_INTERNAL_URL. Local/dev: prefer REDIS_URL (public proxy).
+from nhit.caching.redis_config import resolve_redis_url  # noqa: E402
+
+_RAILWAY_RUNTIME = bool(
+    os.environ.get('RAILWAY_ENVIRONMENT', '').strip()
+    or os.environ.get('RAILWAY_SERVICE_NAME', '').strip()
+)
+_REDIS_URL = resolve_redis_url(
+    redis_internal_url=os.environ.get('REDIS_INTERNAL_URL'),
+    redis_url=os.environ.get('REDIS_URL'),
+    use_internal=_RAILWAY_RUNTIME,
+)
 NHIT_CACHE_ENABLED = bool(_REDIS_URL)
+NHIT_REDIS_USING_INTERNAL = bool(
+    _RAILWAY_RUNTIME and (os.environ.get('REDIS_INTERNAL_URL') or '').strip()
+)
 
 if _REDIS_URL:
     CACHES = {
@@ -327,6 +341,11 @@ LOGGING = {
         'nhit.cache': {
             'handlers': ['console'],
             'level': os.environ.get('NHIT_CACHE_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+        'nhit.inventory_filter.perf': {
+            'handlers': ['console'],
+            'level': os.environ.get('NHIT_INVENTORY_FILTER_PERF_LOG_LEVEL', 'INFO'),
             'propagate': False,
         },
     },

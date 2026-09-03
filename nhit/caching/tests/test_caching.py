@@ -196,3 +196,194 @@ class AisFilterCacheIntegrationTests(TestCase):
         response = self.client.post('/ais_filter/', AIS_PAYLOAD, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json(), [[{'date': 'cached'}]])
+
+
+class RedisUrlResolutionTests(SimpleTestCase):
+    def test_internal_url_preferred_on_railway(self):
+        from nhit.caching.redis_config import resolve_redis_url
+
+        resolved = resolve_redis_url(
+            redis_internal_url='redis://internal.example:6379/0',
+            redis_url='redis://public.example:6379/0',
+            use_internal=True,
+        )
+        self.assertEqual(resolved, 'redis://internal.example:6379/0')
+
+    def test_local_prefers_public_even_when_internal_set(self):
+        from nhit.caching.redis_config import resolve_redis_url
+
+        resolved = resolve_redis_url(
+            redis_internal_url='redis://internal.example:6379/0',
+            redis_url='redis://public.example:6379/0',
+            use_internal=False,
+        )
+        self.assertEqual(resolved, 'redis://public.example:6379/0')
+
+    def test_fallback_to_redis_url_on_railway_without_internal(self):
+        from nhit.caching.redis_config import resolve_redis_url
+
+        resolved = resolve_redis_url(
+            redis_internal_url='  ',
+            redis_url='redis://public.example:6379/0',
+            use_internal=True,
+        )
+        self.assertEqual(resolved, 'redis://public.example:6379/0')
+
+    def test_empty_when_unset(self):
+        from nhit.caching.redis_config import resolve_redis_url
+
+        self.assertEqual(
+            resolve_redis_url(redis_internal_url=None, redis_url=None, use_internal=False),
+            '',
+        )
+
+    def test_resolver_module_does_not_log_or_print_urls(self):
+        import inspect
+
+        from nhit.caching import redis_config
+
+        source = inspect.getsource(redis_config)
+        self.assertNotIn('logging', source)
+        self.assertNotIn('print(', source)
+        self.assertNotIn('logger', source)
+
+
+@override_settings(
+    NHIT_CACHE_ENABLED=True,
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'nhit-count-key-tests',
+            'KEY_PREFIX': 'nhit-test',
+        }
+    },
+)
+class InventoryFilterCountKeyTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_page_fields_excluded_from_count_payload(self):
+        from nhit.caching.inventory_filter_count import filter_payload_without_pagination
+        from nhit.caching.keys import payload_digest
+
+        base = {
+            'chainage_start': 0.0,
+            'chainage_end': 100.0,
+            'date': date(2026, 4, 20),
+            'direction': [],
+            'project_name': ['A'],
+            'asset_type': [],
+            'page': 1,
+            'page_size': 5000,
+        }
+        other_page = {**base, 'page': 9, 'page_size': 15000}
+        self.assertEqual(
+            payload_digest(filter_payload_without_pagination(base)),
+            payload_digest(filter_payload_without_pagination(other_page)),
+        )
+
+    def test_distinct_filters_produce_distinct_count_keys(self):
+        from nhit.caching.inventory_filter_count import filter_payload_without_pagination
+        from nhit.caching.keys import build_cache_key
+
+        def key_for(**overrides):
+            payload = {
+                'chainage_start': 0.0,
+                'chainage_end': 100.0,
+                'date': date(2026, 4, 20),
+                'direction': [],
+                'project_name': ['A'],
+                'asset_type': [],
+                'page': 1,
+                'page_size': 5000,
+                **overrides,
+            }
+            return build_cache_key(
+                namespace='inventory_filter',
+                version=1,
+                payload=filter_payload_without_pagination(payload),
+                scope='count',
+            )
+
+        keys = {
+            key_for(),
+            key_for(project_name=['B']),
+            key_for(date=date(2026, 7, 28)),
+            key_for(chainage_start=10.0),
+            key_for(chainage_end=50.0),
+            key_for(direction=['Increasing']),
+            key_for(asset_type=['Trees']),
+        }
+        self.assertEqual(len(keys), 7)
+
+    def test_count_cache_hit_skips_builder(self):
+        from nhit.caching.inventory_filter_count import get_cached_inventory_filter_count
+
+        calls = {'n': 0}
+
+        def builder():
+            calls['n'] += 1
+            return 99
+
+        payload = {
+            'chainage_start': 0.0,
+            'chainage_end': 1.0,
+            'date': date(2026, 4, 20),
+            'direction': [],
+            'project_name': ['A'],
+            'asset_type': [],
+            'page': 1,
+            'page_size': 5000,
+        }
+        v1, m1 = get_cached_inventory_filter_count(payload=payload, builder=builder)
+        v2, m2 = get_cached_inventory_filter_count(
+            payload={**payload, 'page': 2, 'page_size': 100},
+            builder=builder,
+        )
+        self.assertEqual(v1, 99)
+        self.assertEqual(v2, 99)
+        self.assertFalse(m1['cache_hit'])
+        self.assertTrue(m2['cache_hit'])
+        self.assertEqual(calls['n'], 1)
+
+
+@override_settings(
+    NHIT_CACHE_ENABLED=True,
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'nhit-stampede-tests',
+            'KEY_PREFIX': 'nhit-test',
+        }
+    },
+)
+class CacheStampedeWaitTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch('nhit.caching.service.time.sleep', return_value=None)
+    @patch('nhit.caching.service._acquire_population_lock', return_value=False)
+    @patch('nhit.caching.service.safe_cache_get')
+    def test_waiter_uses_value_populated_during_backoff(self, mock_get, _lock, mock_sleep):
+        calls = {'n': 0}
+
+        def builder():
+            calls['n'] += 1
+            return {'rebuilt': True}
+
+        # Initial miss, then HIT on first backoff poll — waiter must not rebuild.
+        mock_get.side_effect = [
+            (False, None),
+            (True, {'ok': True}),
+        ]
+        value, meta = get_or_set_cached_value(
+            namespace='stampede_ns',
+            payload={'p': 1},
+            builder=builder,
+            timeout=CACHE_TTL_FILTER,
+            use_lock=True,
+        )
+        self.assertEqual(value, {'ok': True})
+        self.assertTrue(meta['cache_hit'])
+        self.assertEqual(calls['n'], 0)
+        mock_sleep.assert_called()

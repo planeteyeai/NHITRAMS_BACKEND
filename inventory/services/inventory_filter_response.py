@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ _DMS_COORDINATE_OVERRIDES: dict[tuple, tuple[str, str]] = {
 }
 
 # Columns required to build the NHIT-compatible response. Excludes NHIT-ignored
-# fields such as image_url and sub_asset_type to reduce remote DB payload size.
+# fields such as image_url to reduce remote DB payload size.
 INVENTORY_FILTER_ONLY_FIELDS = (
     'inventory_id',
     'project_name',
@@ -89,6 +90,7 @@ INVENTORY_FILTER_ONLY_FIELDS = (
     'chainage_end',
     'direction',
     'asset_type',
+    'sub_asset_type',
     'latitude',
     'longitude',
     'survey_date',
@@ -185,6 +187,10 @@ def serialize_inventory_wide_row(item) -> dict:
     if not _should_omit_chainage_start(item):
         row['chainage_start'] = item.chainage_start
 
+    sub_asset_type = (item.sub_asset_type or '').strip()
+    if sub_asset_type:
+        row['sub_asset_type'] = sub_asset_type
+
     source = _serialize_source(item.source)
     if source is not None:
         row['source'] = source
@@ -226,15 +232,30 @@ def build_inventory_filter_groups(
     *,
     offset: int = 0,
     limit: int | None = None,
+    timings: dict | None = None,
 ) -> list[list[dict]]:
-    """Return NHIT-style nested arrays for one page of inventory_filter rows."""
+    """Return NHIT-style nested arrays for one page of inventory_filter rows.
+
+    When *timings* is provided, records select_ms and serialize_ms (milliseconds).
+    """
     ordered = queryset.only(*INVENTORY_FILTER_ONLY_FIELDS).order_by('-inventory_id')
+    select_started = time.perf_counter()
     if limit is not None:
         items = list(ordered[offset : offset + limit])
     elif offset:
         items = list(ordered[offset:])
     else:
         items = list(ordered)
+    select_ms = (time.perf_counter() - select_started) * 1000
 
+    serialize_started = time.perf_counter()
     rows = [serialize_inventory_wide_row(item) for item in items]
-    return group_serialized_rows(rows)
+    groups = group_serialized_rows(rows)
+    serialize_ms = (time.perf_counter() - serialize_started) * 1000
+
+    if timings is not None:
+        timings['select_ms'] = round(select_ms, 2)
+        timings['serialize_ms'] = round(serialize_ms, 2)
+        timings['row_count'] = len(items)
+
+    return groups

@@ -38,7 +38,9 @@ LIST_NAMESPACES = frozenset({
     CACHE_NS_MATERIALS_LIST,
 })
 
-# Short lock to reduce cache stampede on expensive filter endpoints.
+# Stampede lock for expensive filter page builds (inventory_filter typically 1–3s).
+# Lock TTL must outlive a slow build; wait schedule must outlive a typical build so
+# waiters reuse the populated cache instead of starting parallel rebuilds.
 CACHE_LOCK_TIMEOUT_SECONDS = 30
-CACHE_LOCK_WAIT_SECONDS = 0.05
-CACHE_LOCK_MAX_RETRIES = 20
+# Bounded backoff waits (~5.1s total) — avoids tight 50ms polling and covers 1–3s builds.
+CACHE_LOCK_WAIT_SCHEDULE_SECONDS = (0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.0, 1.25)

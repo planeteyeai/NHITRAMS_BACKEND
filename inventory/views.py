@@ -1,9 +1,11 @@
 import logging
+import time
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.renderers import JSONRenderer
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from .models import DPRReport, InventoryWide, InventoryReport
@@ -40,8 +42,19 @@ from .services.inventory_filter_response import (
     INVENTORY_FILTER_HEADER_ROW_COUNT,
     build_inventory_filter_groups,
 )
+from .services.inventory_filter_perf import (
+    log_inventory_filter_performance,
+    resolve_request_id,
+    should_log_inventory_filter_perf,
+)
 from .utils import apply_media_uploads_to_payload, upload_dpr_images
 from nhit.caching import CACHE_NS_INVENTORY_FILTER, CACHE_NS_INVENTORY_MASTER, cached_filter_response, cached_get_response
+from nhit.caching.constants import CACHE_TTL_FILTER
+from nhit.caching.inventory_filter_count import (
+    get_cached_inventory_filter_count,
+    inventory_filter_filter_hash,
+)
+from nhit.caching.service import get_or_set_cached_value
 from django.db import connection, transaction
 from datetime import datetime
 
@@ -55,6 +68,9 @@ class InventoryFilterView(APIView):
         responses={200: InventoryResponseSerializer(many=True), 400: 'Bad Request'}
     )
     def post(self, request):
+        request_started = time.perf_counter()
+        request_id = resolve_request_id(request)
+
         serializer = InventoryFilterSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -63,25 +79,45 @@ class InventoryFilterView(APIView):
         page = data['page']
         page_size = data['page_size']
         offset = (page - 1) * page_size
+        filter_hash = inventory_filter_filter_hash(data)
 
         queryset = build_inventory_filter_queryset(data)
-        total_count = queryset.count()
+
+        count_ms = None
+
+        def count_builder():
+            nonlocal count_ms
+            started = time.perf_counter()
+            value = queryset.count()
+            count_ms = round((time.perf_counter() - started) * 1000, 2)
+            return value
+
+        total_count, count_meta = get_cached_inventory_filter_count(
+            payload=data,
+            builder=count_builder,
+        )
 
         if offset >= total_count:
             return Response({'message': 'No match'}, status=status.HTTP_200_OK)
+
+        page_timings: dict = {}
 
         def build_response():
             return build_inventory_filter_groups(
                 queryset,
                 offset=offset,
                 limit=page_size,
+                timings=page_timings,
             )
 
-        response = cached_filter_response(
+        page_data, page_meta = get_or_set_cached_value(
             namespace=CACHE_NS_INVENTORY_FILTER,
             payload=data,
             builder=build_response,
+            timeout=CACHE_TTL_FILTER,
+            use_lock=True,
         )
+        response = Response(page_data, status=status.HTTP_200_OK)
 
         has_more = (offset + page_size) < total_count
         response[INVENTORY_FILTER_HEADER_PAGINATED] = 'true'
@@ -89,7 +125,38 @@ class InventoryFilterView(APIView):
         response[INVENTORY_FILTER_HEADER_PAGE_SIZE] = str(page_size)
         response[INVENTORY_FILTER_HEADER_ROW_COUNT] = str(total_count)
         response[INVENTORY_FILTER_HEADER_HAS_MORE] = 'true' if has_more else 'false'
+
+        total_ms = round((time.perf_counter() - request_started) * 1000, 2)
+        count_hit = bool(count_meta.get('cache_hit'))
+        page_hit = bool(page_meta.get('cache_hit'))
+        # Estimated DB queries for this endpoint (version lookups are Redis-only).
+        query_count = (0 if count_hit else 1) + (0 if page_hit else 1)
+
+        if should_log_inventory_filter_perf(total_ms):
+            # Measure JSON size without calling Response.render() (renderer not set yet).
+            render_started = time.perf_counter()
+            response_bytes = len(JSONRenderer().render(page_data))
+            render_ms = round((time.perf_counter() - render_started) * 1000, 2)
+            log_inventory_filter_performance({
+                'request_id': request_id,
+                'endpoint': '/inventory_filter/',
+                'page': page,
+                'page_size': page_size,
+                'filter_hash': filter_hash,
+                'count_cache_hit': count_hit,
+                'cache_hit': page_hit,
+                'count_ms': count_ms,
+                'select_ms': page_timings.get('select_ms'),
+                'serialize_ms': page_timings.get('serialize_ms'),
+                'build_ms': page_meta.get('build_ms'),
+                'render_ms': render_ms,
+                'total_ms': total_ms,
+                'query_count': query_count,
+                'response_bytes': response_bytes,
+            })
+
         return response
+
 
 class HealthCheckView(APIView):
     @swagger_auto_schema(

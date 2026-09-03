@@ -871,7 +871,7 @@ class InventoryFilterResponseTests(TestCase):
             latitude=27.06559,
             longitude=77.983,
             survey_date=date(2026, 4, 20),
-            sub_asset_type='ignored',
+            sub_asset_type='MBCB',
             carriage_type='Flexible',
             lane='L3',
             image_url='http://example.com/x.jpg',
@@ -885,11 +885,66 @@ class InventoryFilterResponseTests(TestCase):
         self.assertEqual(row['latitude'], '27.06559')
         self.assertEqual(row['longitude'], '77.983')
         self.assertEqual(row['source'], 'SAR')
+        self.assertEqual(row['sub_asset_type'], 'MBCB')
         self.assertNotIn('trees', row)
         self.assertNotIn('carriage_type', row)
         self.assertNotIn('lane', row)
-        self.assertNotIn('sub_asset_type', row)
         self.assertNotIn('image_url', row)
+
+    def test_sparse_row_omits_blank_sub_asset_type(self):
+        from datetime import date
+        from types import SimpleNamespace
+
+        from inventory.services.inventory_filter_response import serialize_inventory_wide_row
+
+        item = SimpleNamespace(
+            project_name='Agra Bypass Road',
+            chainage_start=1.0,
+            chainage_end=1.1,
+            direction='Increasing',
+            asset_type='Culvert',
+            trees=0.0,
+            culvert=1.0,
+            street_lights=0.0,
+            bridges=0.0,
+            traffic_signals=0.0,
+            bus_stop=0.0,
+            truck_layby=0.0,
+            toll_plaza=0.0,
+            adjacent_road=0.0,
+            toilet_blocks=0.0,
+            rest_area=0.0,
+            rcc_drain=0.0,
+            fuel_station=0.0,
+            emergency_call_box=0.0,
+            tunnels=0.0,
+            footpath=0.0,
+            junction=0.0,
+            sign_boards=0.0,
+            solar_blinker=0.0,
+            median_plants=0.0,
+            service_road=0.0,
+            km_stones=0.0,
+            crash_barrier=0.0,
+            median_opening=0.0,
+            kerb=0.0,
+            guard_post=0.0,
+            delineators=0.0,
+            pedestrian_guard_rail=0.0,
+            slip_roads=0.0,
+            bus_bays=0.0,
+            latitude=27.0,
+            longitude=77.0,
+            survey_date=date(2026, 4, 20),
+            sub_asset_type='  ',
+            carriage_type='Flexible',
+            lane='L1',
+            image_url='',
+            source=None,
+        )
+
+        row = serialize_inventory_wide_row(item)
+        self.assertNotIn('sub_asset_type', row)
 
     def test_omits_chainage_start_for_first_segment(self):
         from datetime import date
@@ -1130,7 +1185,11 @@ class InventoryFilterPaginationTests(TestCase):
         self.assertEqual(response['X-Inventory-Page-Size'], '5000')
         self.assertEqual(response['X-Inventory-Row-Count'], '12000')
         self.assertEqual(response['X-Inventory-Has-More'], 'true')
-        mock_build_groups.assert_called_once_with(mock_qs, offset=0, limit=5000)
+        mock_build_groups.assert_called_once()
+        _args, kwargs = mock_build_groups.call_args
+        self.assertIs(_args[0], mock_qs)
+        self.assertEqual(kwargs.get('offset'), 0)
+        self.assertEqual(kwargs.get('limit'), 5000)
 
     @patch('inventory.views.build_inventory_filter_groups')
     @patch('inventory.views.build_inventory_filter_queryset')
@@ -1147,7 +1206,11 @@ class InventoryFilterPaginationTests(TestCase):
         self.assertEqual(response['X-Inventory-Page'], '2')
         self.assertEqual(response['X-Inventory-Row-Count'], '12000')
         self.assertEqual(response['X-Inventory-Has-More'], 'true')
-        mock_build_groups.assert_called_once_with(mock_qs, offset=5000, limit=5000)
+        mock_build_groups.assert_called_once()
+        _args, kwargs = mock_build_groups.call_args
+        self.assertIs(_args[0], mock_qs)
+        self.assertEqual(kwargs.get('offset'), 5000)
+        self.assertEqual(kwargs.get('limit'), 5000)
 
     @patch('inventory.views.build_inventory_filter_groups')
     @patch('inventory.views.build_inventory_filter_queryset')
@@ -1162,7 +1225,11 @@ class InventoryFilterPaginationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response['X-Inventory-Has-More'], 'false')
-        mock_build_groups.assert_called_once_with(mock_qs, offset=5000, limit=5000)
+        mock_build_groups.assert_called_once()
+        _args, kwargs = mock_build_groups.call_args
+        self.assertIs(_args[0], mock_qs)
+        self.assertEqual(kwargs.get('offset'), 5000)
+        self.assertEqual(kwargs.get('limit'), 5000)
 
     @patch('inventory.views.build_inventory_filter_groups')
     @patch('inventory.views.build_inventory_filter_queryset')
@@ -1207,4 +1274,163 @@ class InventoryFilterPaginationTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data['page'], 1)
         self.assertEqual(serializer.validated_data['page_size'], 15000)
+
+
+@override_settings(
+    NHIT_CACHE_ENABLED=True,
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'nhit-inventory-filter-count-tests',
+            'KEY_PREFIX': 'nhit-test',
+        }
+    },
+)
+class InventoryFilterCountCacheTests(TestCase):
+    """Separate COUNT cache must ignore page/page_size and hit across pages."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.client = APIClient()
+        self.base_payload = {
+            'chainage_start': 0,
+            'chainage_end': 99999,
+            'date': '2026-04-20',
+            'direction': ['All'],
+            'project_name': ['Agra Bypass Road'],
+            'asset_type': ['All'],
+            'page': 1,
+            'page_size': 5000,
+        }
+        self.mock_groups = [[{'project_name': 'Agra Bypass Road', 'chainage_end': 1.0}]]
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    def test_second_page_reuses_count_cache(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 12000
+        mock_build_groups.return_value = self.mock_groups
+
+        first = self.client.post('/inventory_filter/', self.base_payload, format='json')
+        second = self.client.post(
+            '/inventory_filter/',
+            {**self.base_payload, 'page': 2},
+            format='json',
+        )
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(first['X-Inventory-Row-Count'], '12000')
+        self.assertEqual(second['X-Inventory-Row-Count'], '12000')
+        self.assertEqual(mock_qs.count.call_count, 1)
+        self.assertEqual(mock_build_groups.call_count, 2)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    def test_different_page_size_reuses_count_cache(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 12000
+        mock_build_groups.return_value = self.mock_groups
+
+        self.client.post('/inventory_filter/', self.base_payload, format='json')
+        self.client.post(
+            '/inventory_filter/',
+            {**self.base_payload, 'page_size': 7500},
+            format='json',
+        )
+        self.assertEqual(mock_qs.count.call_count, 1)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    def test_different_filter_misses_count_cache(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 12000
+        mock_build_groups.return_value = self.mock_groups
+
+        self.client.post('/inventory_filter/', self.base_payload, format='json')
+        other = {**self.base_payload, 'project_name': ['Other Project']}
+        self.client.post('/inventory_filter/', other, format='json')
+        self.assertEqual(mock_qs.count.call_count, 2)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    def test_page_cache_hit_skips_builder(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 12000
+        mock_build_groups.return_value = self.mock_groups
+
+        self.client.post('/inventory_filter/', self.base_payload, format='json')
+        self.client.post('/inventory_filter/', self.base_payload, format='json')
+        self.assertEqual(mock_qs.count.call_count, 1)
+        self.assertEqual(mock_build_groups.call_count, 1)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_redis_disabled_still_counts_from_db(self, mock_build_qs, mock_build_groups):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 42
+        mock_build_groups.return_value = self.mock_groups
+
+        response = self.client.post('/inventory_filter/', self.base_payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['X-Inventory-Row-Count'], '42')
+        self.assertEqual(mock_qs.count.call_count, 1)
+
+    @patch('inventory.views.should_log_inventory_filter_perf', return_value=True)
+    @patch('inventory.views.log_inventory_filter_performance')
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    def test_observability_log_has_safe_fields(
+        self,
+        mock_build_qs,
+        mock_build_groups,
+        mock_log,
+        _should_log,
+    ):
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 12000
+        mock_build_groups.return_value = self.mock_groups
+
+        response = self.client.post(
+            '/inventory_filter/',
+            self.base_payload,
+            format='json',
+            HTTP_X_REQUEST_ID='req-test-123',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_log.assert_called_once()
+        fields = mock_log.call_args.args[0]
+        self.assertEqual(fields['request_id'], 'req-test-123')
+        self.assertEqual(fields['endpoint'], '/inventory_filter/')
+        self.assertEqual(fields['page'], 1)
+        self.assertEqual(fields['page_size'], 5000)
+        self.assertIn('filter_hash', fields)
+        self.assertIn('cache_hit', fields)
+        self.assertIn('count_cache_hit', fields)
+        self.assertIn('total_ms', fields)
+        self.assertIn('query_count', fields)
+        self.assertIn('response_bytes', fields)
+        serialized = json.dumps(fields)
+        # Must never appear even if a client sent them on the request.
+        self.assertNotIn('Bearer', serialized)
+        self.assertNotIn('Authorization', serialized)
+        self.assertNotIn('redis://', serialized.lower())
+        self.assertNotIn('password', serialized.lower())
+        self.assertNotIn('JWT', serialized)
+
+        # Explicitly ensure the logger helper only serializes provided fields.
+        from inventory.services.inventory_filter_perf import log_inventory_filter_performance
+        with self.assertLogs('nhit.inventory_filter.perf', level='INFO') as captured:
+            log_inventory_filter_performance({
+                'request_id': 'x',
+                'endpoint': '/inventory_filter/',
+                'filter_hash': 'abc',
+            })
+        joined = ' '.join(captured.output)
+        self.assertIn('inventory_filter_performance', joined)
+        self.assertNotIn('Authorization', joined)
+        self.assertNotIn('redis://', joined.lower())
 

@@ -12,6 +12,8 @@ from nhit.caching.constants import (
     CACHE_NS_TRAFFIC_FILTER,
 )
 from nhit.caching.invalidation import bump_namespace_version
+from nhit.caching.inventory_filter_count import get_cached_inventory_filter_count
+from nhit.caching.redis_config import resolve_redis_url
 from nhit.caching.response import cached_filter_response, cached_get_response
 
 __all__ = [
@@ -27,4 +29,6 @@ __all__ = [
     'bump_namespace_version',
     'cached_filter_response',
     'cached_get_response',
+    'get_cached_inventory_filter_count',
+    'resolve_redis_url',
 ]

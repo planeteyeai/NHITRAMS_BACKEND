@@ -10,9 +10,8 @@ from django.conf import settings
 from django.core.cache import cache
 
 from nhit.caching.constants import (
-    CACHE_LOCK_MAX_RETRIES,
     CACHE_LOCK_TIMEOUT_SECONDS,
-    CACHE_LOCK_WAIT_SECONDS,
+    CACHE_LOCK_WAIT_SCHEDULE_SECONDS,
 )
 from nhit.caching.keys import build_cache_key
 
@@ -95,7 +94,15 @@ def safe_cache_set(key: str, value: Any, *, timeout: int) -> bool:
     if not is_cache_usable():
         return False
     try:
-        cache.set(key, value, timeout=timeout)
+        result = cache.set(key, value, timeout=timeout)
+        # django-redis + IGNORE_EXCEPTIONS returns None on connection failure.
+        # Other backends may return None/True; only treat Redis None as failure.
+        if result is None and is_redis_configured():
+            logger.warning('cache set returned None key_suffix=%s', key[-12:])
+            return False
+        if result is False:
+            logger.warning('cache set returned False key_suffix=%s', key[-12:])
+            return False
         logger.debug('cache SET key_suffix=%s ttl=%s', key[-12:], timeout)
         return True
     except Exception:
@@ -118,6 +125,16 @@ def _release_population_lock(namespace: str, digest: str) -> None:
         cache.delete(lock_key)
     except Exception:
         logger.warning('cache lock release failed namespace=%s', namespace, exc_info=True)
+
+
+def _wait_for_cached_value(cache_key: str) -> tuple[bool, Any | None]:
+    """Poll with bounded backoff until the lock holder populates the key or wait expires."""
+    for delay in CACHE_LOCK_WAIT_SCHEDULE_SECONDS:
+        time.sleep(delay)
+        hit, cached_value = safe_cache_get(cache_key)
+        if hit:
+            return True, cached_value
+    return False, None
 
 
 def get_or_set_cached_value(
@@ -155,12 +172,10 @@ def get_or_set_cached_value(
     if use_lock:
         acquired = _acquire_population_lock(namespace, digest)
         if not acquired:
-            for _ in range(CACHE_LOCK_MAX_RETRIES):
-                time.sleep(CACHE_LOCK_WAIT_SECONDS)
-                hit, cached_value = safe_cache_get(cache_key)
-                if hit:
-                    meta['cache_hit'] = True
-                    return cached_value, meta
+            hit, cached_value = _wait_for_cached_value(cache_key)
+            if hit:
+                meta['cache_hit'] = True
+                return cached_value, meta
         try:
             hit, cached_value = safe_cache_get(cache_key)
             if hit:
