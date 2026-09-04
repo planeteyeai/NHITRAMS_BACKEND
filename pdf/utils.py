@@ -102,18 +102,19 @@ def get_owned_reports(model, username: str, report_ids: list[int] | None):
             ),
         })
 
+    # Batched ownership: one query instead of 2×N EXISTS round-trips.
+    found_by_id = {
+        obj.pk: obj
+        for obj in model.objects.filter(pk__in=unique_ids)
+    }
     for report_id in unique_ids:
-        exists = model.objects.filter(pk=report_id).exists()
-        if not exists:
+        obj = found_by_id.get(report_id)
+        if obj is None:
             raise NotFound(f'Report {report_id} not found.')
-        owned = model.objects.filter(pk=report_id, username=username).exists()
-        if not owned:
+        if getattr(obj, 'username', None) != username:
             raise PermissionDenied('You do not have permission to export this report.')
 
-    qs = base.filter(pk__in=unique_ids)
-    # Preserve requested order
-    by_id = {obj.pk: obj for obj in qs}
-    ordered = [by_id[i] for i in unique_ids if i in by_id]
+    ordered = [found_by_id[i] for i in unique_ids]
     if not ordered:
         raise NotFound('No matching reports.')
     return ordered
@@ -178,6 +179,7 @@ def download_image(
     temp_dir: str,
     *,
     optimize: bool = True,
+    http_client: Any | None = None,
 ) -> str | None:
     """Download an image URL into temp_dir. Returns local path or None.
 
@@ -198,16 +200,23 @@ def download_image(
             return None
     else:
         try:
-            request = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'NHIT-AI-Identifier-PDF/1.0'},
-            )
-            with urllib.request.urlopen(request, timeout=IMAGE_TIMEOUT_SECONDS) as response:
-                content_type = (response.headers.get('Content-Type') or '').lower()
-                data = response.read(IMAGE_MAX_BYTES + 1)
-                if len(data) > IMAGE_MAX_BYTES:
-                    logger.warning('Image too large, skipping: %s', url)
-                    return None
+            if http_client is not None:
+                data, content_type = http_client.get_bytes(url)
+            else:
+                request = urllib.request.Request(
+                    url,
+                    headers={'User-Agent': 'NHIT-AI-Identifier-PDF/1.0'},
+                )
+                with urllib.request.urlopen(request, timeout=IMAGE_TIMEOUT_SECONDS) as response:
+                    content_type = (response.headers.get('Content-Type') or '').lower()
+                    data = response.read(IMAGE_MAX_BYTES + 1)
+                    if len(data) > IMAGE_MAX_BYTES:
+                        logger.warning('Image too large, skipping: %s', url)
+                        return None
+
+            if len(data) > IMAGE_MAX_BYTES:
+                logger.warning('Image too large, skipping: %s', url)
+                return None
 
             ext = '.jpg'
             if 'png' in content_type:
@@ -252,11 +261,9 @@ def prefetch_images(
     max_workers: int = IMAGE_PREFETCH_WORKERS,
     optimize: bool = True,
     on_each: Callable[[str, str | None], None] | None = None,
+    http_client: Any | None = None,
 ) -> dict[str, str | None]:
-    """Download unique image URLs (optionally in parallel). Missing/failed URLs map to None.
-
-    Prefer max_workers=1 for large async exports to bound memory.
-    """
+    """Download unique image URLs with bounded workers. Missing/failed URLs map to None."""
     unique: list[str] = []
     seen: set[str] = set()
     for raw in urls:
@@ -271,31 +278,44 @@ def prefetch_images(
         return results
 
     workers = max(1, min(max_workers, len(unique)))
+    client = http_client
+    if client is None and workers > 1:
+        try:
+            from .http_client import ImageHttpClient
+            client = ImageHttpClient(
+                timeout_seconds=IMAGE_TIMEOUT_SECONDS,
+                max_bytes=IMAGE_MAX_BYTES,
+                maxsize=workers,
+            )
+        except Exception:
+            client = None
 
     def _one(url: str) -> tuple[str, str | None]:
-        path = download_image(url, temp_dir, optimize=optimize)
+        path = download_image(url, temp_dir, optimize=optimize, http_client=client)
         return url, path
 
-    if workers == 1:
-        for url in unique:
-            _, path = _one(url)
-            results[url] = path
-            if on_each:
-                on_each(url, path)
-        return results
+    # Bounded submission: keep at most `workers` futures in flight.
+    from concurrent.futures import wait, FIRST_COMPLETED
 
+    pending_urls = list(unique)
+    in_flight: dict[Any, str] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_one, url): url for url in unique}
-        for future in as_completed(futures):
-            url = futures[future]
-            try:
-                _, path = future.result()
-                results[url] = path
-            except Exception as exc:
-                logger.warning('Image prefetch failed for %s: %s', url, exc)
-                results[url] = None
-            if on_each:
-                on_each(url, results[url])
+        while pending_urls or in_flight:
+            while pending_urls and len(in_flight) < workers:
+                next_url = pending_urls.pop(0)
+                fut = pool.submit(_one, next_url)
+                in_flight[fut] = next_url
+            done, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED)
+            for future in done:
+                url = in_flight.pop(future)
+                try:
+                    _, path = future.result()
+                    results[url] = path
+                except Exception as exc:
+                    logger.warning('Image prefetch failed for %s: %s', url, exc)
+                    results[url] = None
+                if on_each:
+                    on_each(url, results[url])
     return results
 
 

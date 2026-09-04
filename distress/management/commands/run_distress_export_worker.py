@@ -16,7 +16,7 @@ import time
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
-from distress.export_jobs import claim_next_job, process_export_job
+from distress.export_jobs import claim_next_job, process_export_job, _image_prep_concurrency
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,8 @@ class Command(BaseCommand):
         processed = 0
 
         self.stdout.write(self.style.SUCCESS(
-            'Distress PDF export worker started (concurrency=1)'
+            f'Distress PDF export worker started '
+            f'(job concurrency=1, image_prep_concurrency={_image_prep_concurrency()})'
         ))
 
         while not stop['flag']:

@@ -1,14 +1,11 @@
 """Unbuffered benchmark for async distress PDF export (background path).
 
-Usage (from repo root):
+Usage:
 
     set PYTHONUNBUFFERED=1
-    python -u tools/benchmark_distress_pdf_export.py --counts 1,5,10,32
+    python -u tools/benchmark_distress_pdf_export.py --counts 1,5,10,32 --concurrency 1,2,4
 
-Does NOT hold the HTTP GET export open. Creates ExportJob rows and runs
-process_export_job directly (same code path as the Railway worker).
-
-S3 upload is mocked by default unless --real-s3 is passed.
+S3 upload is mocked by default. Source image downloads are real.
 """
 
 from __future__ import annotations
@@ -25,31 +22,51 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _rss_mb() -> float | None:
+    try:
+        import psutil
+        return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        try:
+            import resource
+            # ru_maxrss is KB on Linux, bytes on macOS — report best-effort.
+            val = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == 'darwin':
+                return val / (1024 * 1024)
+            return val / 1024.0
+        except Exception:
+            return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--counts', default='1,5,10,32')
-    parser.add_argument('--project-contains', default='',
-                        help='Optional Project_Name icontains filter (empty = no filter)')
+    parser.add_argument('--concurrency', default='4',
+                        help='Comma-separated DISTRESS_PDF_IMAGE_PREP_CONCURRENCY values')
+    parser.add_argument('--project-contains', default='')
     parser.add_argument('--date', default='')
     parser.add_argument('--username', default='')
     parser.add_argument('--real-s3', action='store_true')
-    parser.add_argument('--compare-images', action='store_true',
-                        help='Compare raw vs optimized image sizes for first N URLs')
     args = parser.parse_args()
 
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'nhit.settings')
     os.environ.setdefault('PYTHONUNBUFFERED', '1')
-
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
     import django
     django.setup()
 
+    from django.conf import settings
+    from django.test.utils import override_settings
+    from django.utils import timezone
+
     from distress.export_jobs import create_export_job, process_export_job
-    from distress.models import DistressReport
-    from pdf.utils import TempWorkspace, download_image, optimize_image_for_pdf
+    from distress.models import DistressPdfExportJob, DistressReport
+    from pdf.utils import get_owned_reports
 
     counts = [int(x.strip()) for x in args.counts.split(',') if x.strip()]
+    conc_list = [int(x.strip()) for x in args.concurrency.split(',') if x.strip()]
+
     qs = DistressReport.objects.all().order_by('id')
     if args.username:
         qs = qs.filter(username=args.username)
@@ -65,106 +82,95 @@ def main() -> int:
 
     username = reports[0].username
     _log(f'Using username={username} matched={len(reports)}')
+    table_rows = []
 
-    if args.compare_images:
-        urls = [(r.Image_URL or '').strip() for r in reports[:5] if (r.Image_URL or '').strip()]
-        _log(f'--- Image optimization sample ({len(urls)} urls) ---')
-        with TempWorkspace() as ws:
-            for i, url in enumerate(urls, 1):
-                t0 = time.perf_counter()
-                raw = download_image(url, ws.dir, optimize=False)
-                dl = time.perf_counter() - t0
-                if not raw:
-                    _log(f'[{i}] download failed')
-                    continue
-                raw_size = os.path.getsize(raw)
-                t1 = time.perf_counter()
-                opt = optimize_image_for_pdf(raw, ws.dir)
-                rz = time.perf_counter() - t1
-                opt_size = os.path.getsize(opt) if opt else 0
-                _log(
-                    f'[{i}] raw_kb={raw_size/1024:.1f} opt_kb={opt_size/1024:.1f} '
-                    f'download_s={dl:.2f} resize_s={rz:.2f}'
-                )
+    for conc in conc_list:
+        _log(f'\n######## concurrency={conc} ########')
+        for n in counts:
+            subset = reports[:n]
+            if len(subset) < n:
+                _log(f'SKIP count={n}: only {len(subset)} reports available')
+                continue
+            ids = [r.id for r in subset]
+            _log(f'\n=== n={n} concurrency={conc} ===')
+            rss0 = _rss_mb()
 
-    rows = []
-    for n in counts:
-        subset = reports[:n]
-        if len(subset) < n:
-            _log(f'SKIP count={n}: only {len(subset)} reports available')
-            continue
+            t_own0 = time.perf_counter()
+            get_owned_reports(DistressReport, username, ids)
+            ownership_ms = (time.perf_counter() - t_own0) * 1000
 
-        ids = [r.id for r in subset]
-        _log(f'\n=== Benchmark {n} reports ===')
-        t_create0 = time.perf_counter()
-        job = create_export_job(username=username, ids=ids)
-        create_s = time.perf_counter() - t_create0
-        _log(f'job_create_s={create_s:.3f} job_id={job.id}')
+            t_create0 = time.perf_counter()
+            with override_settings(DISTRESS_PDF_IMAGE_PREP_CONCURRENCY=conc):
+                job = create_export_job(username=username, ids=ids)
+            create_ms = (time.perf_counter() - t_create0) * 1000
+            _log(f'job_create_ms={create_ms:.0f} ownership_ms={ownership_ms:.0f} job_id={job.id}')
 
-        # Mark processing like the worker claim step.
-        from django.utils import timezone
-        from distress.models import DistressPdfExportJob
-        job.status = DistressPdfExportJob.STATUS_PROCESSING
-        job.started_at = timezone.now()
-        job.save(update_fields=['status', 'started_at'])
+            job.status = DistressPdfExportJob.STATUS_PROCESSING
+            job.started_at = timezone.now()
+            job.save(update_fields=['status', 'started_at'])
 
-        def _run():
-            t0 = time.perf_counter()
-            # Progress printer while processing via monkeypatch of save counts is heavy;
-            # instead wrap download_image for per-report timing.
+            # Instrument download_image wall time via monkeypatch.
             from distress import export_jobs as ej
             orig = ej.download_image
-            times = {'download': 0.0, 'n': 0}
+            dl_ms = {'sum': 0.0, 'n': 0}
 
-            def timed_download(url, temp_dir, optimize=True):
-                idx = times['n'] + 1
-                times['n'] = idx
-                _log(f'[{idx:02d}/{n}] image prepare started')
-                t = time.perf_counter()
-                path = orig(url, temp_dir, optimize=optimize)
-                elapsed = time.perf_counter() - t
-                times['download'] += elapsed
-                _log(f'[{idx:02d}/{n}] image prepare completed {elapsed:.2f}s')
+            def timed_download(url, temp_dir, optimize=True, http_client=None):
+                t0 = time.perf_counter()
+                path = orig(url, temp_dir, optimize=optimize, http_client=http_client)
+                elapsed = (time.perf_counter() - t0) * 1000
+                dl_ms['sum'] += elapsed
+                dl_ms['n'] += 1
+                _log(f'  [{dl_ms["n"]:02d}] prepare {elapsed:.0f}ms')
                 return path
 
             ej.download_image = timed_download
+            t_job0 = time.perf_counter()
             try:
-                process_export_job(job)
+                with override_settings(DISTRESS_PDF_IMAGE_PREP_CONCURRENCY=conc):
+                    # Re-read settings helper picks up override via getattr(settings,...)
+                    if args.real_s3:
+                        process_export_job(job)
+                    else:
+                        with patch(
+                            'distress.export_jobs.upload_local_file_to_s3',
+                            return_value='Distress PDF Exports/benchmark.pdf',
+                        ):
+                            process_export_job(job)
+            except Exception:
+                _log(f'FAILED n={n} concurrency={conc}')
+                traceback.print_exc()
+                table_rows.append((conc, n, create_ms, None, None, 'exception', rss0, None))
+                continue
             finally:
                 ej.download_image = orig
-            total = time.perf_counter() - t0
-            job.refresh_from_db()
-            return total, times['download']
 
-        try:
-            if args.real_s3:
-                total_s, s3_dl_s = _run()
-            else:
-                with patch(
-                    'distress.export_jobs.upload_local_file_to_s3',
-                    return_value='Distress PDF Exports/benchmark.pdf',
-                ):
-                    total_s, s3_dl_s = _run()
+            total_ms = (time.perf_counter() - t_job0) * 1000
             job.refresh_from_db()
+            rss1 = _rss_mb()
+            prep_ms = dl_ms['sum']
+            # PDF approx = total - download wall (overlaps under concurrency, so clamp)
+            pdf_approx = max(0.0, total_ms - (prep_ms / max(conc, 1)))
             _log(
-                f'RESULT n={n} status={job.status} progress={job.progress} '
-                f'completed={job.completed_reports} failed={job.failed_reports} '
-                f'total_s={total_s:.1f} image_prep_s={s3_dl_s:.1f} '
-                f's3_key={job.output_s3_key or "-"}'
+                f'RESULT n={n} conc={conc} status={job.status} '
+                f'ok={job.completed_reports} fail={job.failed_reports} '
+                f'progress={job.progress} total_ms={total_ms:.0f} '
+                f'image_prepare_sum_ms={prep_ms:.0f} rss0={rss0} rss1={rss1}'
             )
-            rows.append((n, create_s, s3_dl_s, total_s, job.status))
-        except Exception:
-            _log(f'FAILED n={n}')
-            traceback.print_exc()
-            rows.append((n, create_s, None, None, 'exception'))
+            table_rows.append((
+                conc, n, create_ms, prep_ms, total_ms, job.status, rss0, rss1,
+                job.completed_reports, job.failed_reports,
+            ))
 
-    _log('\n| Reports | Job Create | Image Prep | Total | Result |')
-    _log('|---:|---:|---:|---:|---|')
-    for n, create_s, img_s, total_s, result in rows:
+    _log('\n| Conc | Reports | Job Create | Image Prep Sum | Total | Status | RSS start | RSS end |')
+    _log('|---:|---:|---:|---:|---:|---|---:|---:|')
+    for row in table_rows:
+        conc, n, create_ms, prep_ms, total_ms, status, rss0, rss1 = row[:8]
         _log(
-            f'| {n} | {create_s:.3f}s | '
-            f'{("-" if img_s is None else f"{img_s:.1f}s")} | '
-            f'{("-" if total_s is None else f"{total_s:.1f}s")} | {result} |'
+            f'| {conc} | {n} | '
+            f'{create_ms:.0f}ms | '
+            f'{("-" if prep_ms is None else f"{prep_ms:.0f}ms")} | '
+            f'{("-" if total_ms is None else f"{total_ms:.0f}ms")} | '
+            f'{status} | {rss0} | {rss1} |'
         )
     return 0
 

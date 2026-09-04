@@ -242,6 +242,60 @@ class DistressPDFExportWorkerTests(TestCase):
         self.assertEqual(payload['progress'], 59)
         self.assertIsNone(payload['download_url'])
 
+    def test_batched_ownership_uses_few_queries(self):
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+        from pdf.utils import get_owned_reports
+
+        reports = [self._create(Distress_Type=f'T{i}') for i in range(8)]
+        ids = [r.id for r in reports]
+        with CaptureQueriesContext(connection) as ctx:
+            ordered = get_owned_reports(DistressReport, 'ram.patil', ids)
+        self.assertEqual([r.id for r in ordered], ids)
+        # One batched SELECT — not 2×N EXISTS.
+        self.assertLessEqual(len(ctx.captured_queries), 3)
+
+    @override_settings(DISTRESS_PDF_IMAGE_PREP_CONCURRENCY=4, DISTRESS_PDF_PROGRESS_SAVE_EVERY=4)
+    @patch('distress.export_jobs.upload_local_file_to_s3')
+    def test_concurrent_image_prep_and_throttled_progress(self, mock_upload):
+        mock_upload.return_value = 'Distress PDF Exports/conc.pdf'
+        reports = [self._create(Image_URL='', Distress_Type=f'T{i}') for i in range(8)]
+        job = create_export_job(username='ram.patil', ids=[r.id for r in reports])
+        claimed = claim_next_job()
+
+        save_calls = {'n': 0}
+        real_save = DistressPdfExportJob.save
+
+        def counting_save(self, *args, **kwargs):
+            save_calls['n'] += 1
+            return real_save(self, *args, **kwargs)
+
+        with patch.object(DistressPdfExportJob, 'save', counting_save):
+            process_export_job(claimed)
+        claimed.refresh_from_db()
+        self.assertEqual(claimed.status, DistressPdfExportJob.STATUS_COMPLETED)
+        self.assertEqual(claimed.completed_reports, 8)
+        # Throttled progress + final terminal save should be << 8 progress-only writes.
+        self.assertLess(save_calls['n'], 20)
+
+    def test_requeue_stale_processing_jobs(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from distress.export_jobs import requeue_stale_processing_jobs
+
+        report = self._create()
+        job = create_export_job(username='ram.patil', ids=[report.id])
+        job.status = DistressPdfExportJob.STATUS_PROCESSING
+        job.started_at = timezone.now() - timedelta(hours=2)
+        job.save(update_fields=['status', 'started_at'])
+
+        with override_settings(DISTRESS_PDF_STALE_PROCESSING_SECONDS=60):
+            n = requeue_stale_processing_jobs()
+        self.assertGreaterEqual(n, 1)
+        job.refresh_from_db()
+        self.assertEqual(job.status, DistressPdfExportJob.STATUS_QUEUED)
+        self.assertIsNone(job.started_at)
+
 
 class PDFImageOptimizationTests(TestCase):
     def _make_large_png(self, path: str, size=(2000, 1500)):

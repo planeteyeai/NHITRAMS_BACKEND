@@ -300,6 +300,19 @@ AWS_S3_DISTRESS_PDF_FOLDER = os.environ.get('AWS_S3_DISTRESS_PDF_FOLDER', 'Distr
 AWS_S3_PDF_PRESIGN_EXPIRES_SECONDS = int(
     os.environ.get('AWS_S3_PDF_PRESIGN_EXPIRES_SECONDS', '3600')
 )
+# Async distress PDF export tuning (PostgreSQL worker; Redis not required).
+DISTRESS_PDF_IMAGE_PREP_CONCURRENCY = max(
+    1,
+    int(os.environ.get('DISTRESS_PDF_IMAGE_PREP_CONCURRENCY', '2')),
+)
+DISTRESS_PDF_PROGRESS_SAVE_EVERY = max(
+    1,
+    int(os.environ.get('DISTRESS_PDF_PROGRESS_SAVE_EVERY', '4')),
+)
+DISTRESS_PDF_STALE_PROCESSING_SECONDS = max(
+    60,
+    int(os.environ.get('DISTRESS_PDF_STALE_PROCESSING_SECONDS', str(30 * 60))),
+)
 AWS_DEFAULT_ACL = os.environ.get('AWS_DEFAULT_ACL', '') or None
 AWS_S3_MAX_UPLOAD_BYTES = int(os.environ.get('AWS_S3_MAX_UPLOAD_BYTES', str(10 * 1024 * 1024)))
 AWS_S3_MAX_VIDEO_UPLOAD_BYTES = int(

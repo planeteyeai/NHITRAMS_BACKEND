@@ -1,0 +1,71 @@
+{
+  "n_reports": 32,
+  "n_ok": 30,
+  "n_fail": 2,
+  "sum_ms": {
+    "download_ms": 449385.9,
+    "dns_connect_ttfb_ms": 11619.0,
+    "response_read_ms": 437766.5,
+    "file_write_ms": 164.8,
+    "decode_ms": 2435.3,
+    "exif_ms": 682.0,
+    "convert_ms": 0.1,
+    "resize_ms": 820.7,
+    "jpeg_encode_write_ms": 264.0,
+    "cleanup_ms": 48.4,
+    "total_image_ms": 453891.9
+  },
+  "mean_ms": {
+    "download_ms": 14979.5,
+    "dns_connect_ttfb_ms": 387.3,
+    "response_read_ms": 14592.2,
+    "file_write_ms": 5.5,
+    "decode_ms": 81.2,
+    "exif_ms": 22.7,
+    "convert_ms": 0.0,
+    "resize_ms": 27.4,
+    "jpeg_encode_write_ms": 8.8,
+    "cleanup_ms": 1.6,
+    "total_image_ms": 15129.7
+  },
+  "p95_ms": {
+    "download_ms": 84459.3,
+    "dns_connect_ttfb_ms": 879.7,
+    "response_read_ms": 84161.2,
+    "file_write_ms": 7.9,
+    "decode_ms": 129.5,
+    "exif_ms": 48.0,
+    "convert_ms": 0.0,
+    "resize_ms": 41.6,
+    "jpeg_encode_write_ms": 12.9,
+    "cleanup_ms": 3.9,
+    "total_image_ms": 84666.6
+  },
+  "share_of_total_pct": {
+    "download_ms": 99.0,
+    "dns_connect_ttfb_ms": 2.6,
+    "response_read_ms": 96.4,
+    "file_write_ms": 0.0,
+    "decode_ms": 0.5,
+    "exif_ms": 0.2,
+    "convert_ms": 0.0,
+    "resize_ms": 0.2,
+    "jpeg_encode_write_ms": 0.1,
+    "cleanup_ms": 0.0
+  },
+  "source_size_kb": {
+    "mean": 6711.9,
+    "max": 12794.4
+  },
+  "opt_size_kb": {
+    "mean": 60.6,
+    "max": 93.7
+  },
+  "notes": [
+    "Benchmark \"Image Prep\" in process_export_job == sequential download_image(optimize=True) per unique URL.",
+    "No HTTP session reuse; each image opens a new urllib connection.",
+    "DB work for image prep is one queryset before the loop (not in image timer).",
+    "Per-report job.save() progress updates are OUTSIDE download_image but INSIDE the export loop."
+  ],
+  "db_exists_x5_ms": 528.4
+}
