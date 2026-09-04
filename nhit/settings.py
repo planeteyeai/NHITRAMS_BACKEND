@@ -73,7 +73,7 @@ if (BASE_DIR / 'test' / 'apps.py').is_file():
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'django.middleware.gzip.GZipMiddleware',
+    'nhit.middleware.SelectiveGZipMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -250,13 +250,14 @@ CORS_ALLOW_ALL_ORIGINS = _env_bool('CORS_ALLOW_ALL_ORIGINS', default=DEBUG)
 CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_CREDENTIALS = _env_bool('CORS_ALLOW_CREDENTIALS', default=True)
 
-# Expose inventory_filter pagination headers to browser clients (NHIT parity).
+# Expose inventory_filter pagination headers + PDF download filename to browsers.
 CORS_EXPOSE_HEADERS = [
     'X-Inventory-Paginated',
     'X-Inventory-Page',
     'X-Inventory-Page-Size',
     'X-Inventory-Row-Count',
     'X-Inventory-Has-More',
+    'Content-Disposition',
 ]
 
 CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS')

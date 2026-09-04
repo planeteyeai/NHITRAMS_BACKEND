@@ -112,6 +112,21 @@ class DistressPDFExportTests(TestCase):
         response = self.client.get('/distress/export/pdf/', **self.auth)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_export_pdf_not_gzipped_when_client_accepts_gzip(self):
+        """Browsers send Accept-Encoding: gzip; PDF must stay raw %PDF bytes."""
+        report = self._create()
+        response = self.client.get(
+            f'/distress/export/pdf/?id={report.id}',
+            HTTP_ACCEPT_ENCODING='gzip',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertNotEqual(response.get('Content-Encoding'), 'gzip')
+        body = _pdf_bytes(response)
+        self.assertTrue(body.startswith(b'%PDF'), body[:16])
+        self.assertNotEqual(body[:2], b'\x1f\x8b')
+
     def test_builder_placeholder_when_no_image(self):
         report = self._create(Image_URL='')
         with TempWorkspace() as ws:
