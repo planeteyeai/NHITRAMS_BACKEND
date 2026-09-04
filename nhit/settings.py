@@ -296,6 +296,10 @@ AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
 AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', 'nhitbucket')
 AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'ap-south-1')
 AWS_S3_DPR_FOLDER = os.environ.get('AWS_S3_DPR_FOLDER', 'Damaged Assets')
+AWS_S3_DISTRESS_PDF_FOLDER = os.environ.get('AWS_S3_DISTRESS_PDF_FOLDER', 'Distress PDF Exports')
+AWS_S3_PDF_PRESIGN_EXPIRES_SECONDS = int(
+    os.environ.get('AWS_S3_PDF_PRESIGN_EXPIRES_SECONDS', '3600')
+)
 AWS_DEFAULT_ACL = os.environ.get('AWS_DEFAULT_ACL', '') or None
 AWS_S3_MAX_UPLOAD_BYTES = int(os.environ.get('AWS_S3_MAX_UPLOAD_BYTES', str(10 * 1024 * 1024)))
 AWS_S3_MAX_VIDEO_UPLOAD_BYTES = int(

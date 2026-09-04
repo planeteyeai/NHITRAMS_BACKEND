@@ -12,6 +12,8 @@ from .views import (
     DistressReportHistoryView,
     DistressReportDetailView,
     DistressPDFExportView,
+    DistressPDFAsyncExportView,
+    DistressPDFExportJobStatusView,
 )
 from .views_repair import DistressRepairView
 
@@ -42,5 +44,15 @@ urlpatterns = [
     ),
     path('distress/history/', DistressReportHistoryView.as_view(), name='distress-report-history'),
     path('distress/export/pdf/', DistressPDFExportView.as_view(), name='distress-export-pdf'),
+    path(
+        'distress/export/pdf/async/',
+        DistressPDFAsyncExportView.as_view(),
+        name='distress-export-pdf-async',
+    ),
+    path(
+        'distress/export/pdf/jobs/<uuid:job_id>/status/',
+        DistressPDFExportJobStatusView.as_view(),
+        name='distress-export-pdf-job-status',
+    ),
     path('distress/<int:report_id>/', DistressReportDetailView.as_view(), name='distress-report-detail'),
 ]

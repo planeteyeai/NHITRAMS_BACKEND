@@ -7,19 +7,38 @@ import os
 import tempfile
 import urllib.error
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from django.http import FileResponse, HttpResponse
+from django.http import FileResponse
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+
+from . import styles as S
 
 logger = logging.getLogger(__name__)
 
-IMAGE_TIMEOUT_SECONDS = 15
+# Keep image waits short so batch PDF export (e.g. 32 reports) cannot hang for minutes.
+IMAGE_TIMEOUT_SECONDS = 8
 IMAGE_MAX_BYTES = 15 * 1024 * 1024
+# Default prefetch concurrency for small sync exports. Async worker uses 1.
+IMAGE_PREFETCH_WORKERS = 8
+# Soft product limit — large enough for a full-day inspection, avoids runaway exports.
+MAX_PDF_EXPORT_REPORTS = 100
 ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
+
+# Match DistressReportBuilder / InventoryReportBuilder detail image box.
+# content_width * 0.52 by 75mm — target ~175 DPI of that on-page box (~2× 72dpi).
+PDF_IMAGE_DISPLAY_WIDTH_PT = (A4[0] - 2 * S.MARGIN) * 0.52
+PDF_IMAGE_DISPLAY_HEIGHT_PT = 75 * mm
+PDF_IMAGE_TARGET_DPI = 175
+PDF_IMAGE_MAX_WIDTH_PX = max(1, int(PDF_IMAGE_DISPLAY_WIDTH_PT / 72 * PDF_IMAGE_TARGET_DPI))
+PDF_IMAGE_MAX_HEIGHT_PX = max(1, int(PDF_IMAGE_DISPLAY_HEIGHT_PT / 72 * PDF_IMAGE_TARGET_DPI))
+PDF_IMAGE_JPEG_QUALITY = 80
 
 
 def parse_export_ids(query_params) -> list[int] | None:
@@ -56,15 +75,33 @@ def get_owned_reports(model, username: str, report_ids: list[int] | None):
     - Existing report owned by someone else → 403
     - Missing report id → 404
     - Empty result set → 404
+    - More than MAX_PDF_EXPORT_REPORTS → 400
     """
     base = model.objects.filter(username=username).order_by('-created_at', '-id')
 
     if report_ids is None:
         if not base.exists():
             raise NotFound('No matching reports.')
+        count = base.count()
+        if count > MAX_PDF_EXPORT_REPORTS:
+            raise ValidationError({
+                'detail': (
+                    f'Too many reports to export at once ({count}). '
+                    f'Select at most {MAX_PDF_EXPORT_REPORTS} reports, '
+                    f'or filter by date/project before downloading.'
+                ),
+            })
         return base
 
     unique_ids = list(dict.fromkeys(report_ids))  # preserve order, dedupe
+    if len(unique_ids) > MAX_PDF_EXPORT_REPORTS:
+        raise ValidationError({
+            'detail': (
+                f'Too many reports to export at once ({len(unique_ids)}). '
+                f'Select at most {MAX_PDF_EXPORT_REPORTS} reports.'
+            ),
+        })
+
     for report_id in unique_ids:
         exists = model.objects.filter(pk=report_id).exists()
         if not exists:
@@ -82,49 +119,184 @@ def get_owned_reports(model, username: str, report_ids: list[int] | None):
     return ordered
 
 
-def download_image(url: str, temp_dir: str) -> str | None:
-    """Download an image URL into temp_dir. Returns local path or None."""
+def optimize_image_for_pdf(
+    source_path: str,
+    temp_dir: str,
+    *,
+    max_width_px: int = PDF_IMAGE_MAX_WIDTH_PX,
+    max_height_px: int = PDF_IMAGE_MAX_HEIGHT_PX,
+    jpeg_quality: int = PDF_IMAGE_JPEG_QUALITY,
+) -> str | None:
+    """Resize/compress an image for ReportLab embed. Returns optimized path or None.
+
+    Lifecycle: open → resize → encode JPEG → close Pillow objects.
+    On failure returns None so callers can fall back to placeholder behavior.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        return None
+
+    try:
+        from PIL import Image as PILImage
+        from PIL import ImageOps
+    except ImportError:
+        logger.warning('Pillow unavailable; using original image %s', source_path)
+        return source_path
+
+    try:
+        with PILImage.open(source_path) as img:
+            img = ImageOps.exif_transpose(img)
+            # Flatten alpha onto white for JPEG.
+            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                rgba = img.convert('RGBA')
+                background = PILImage.new('RGB', rgba.size, (255, 255, 255))
+                background.paste(rgba, mask=rgba.split()[-1])
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            img.thumbnail((max_width_px, max_height_px), PILImage.Resampling.LANCZOS)
+
+            fd, out_path = tempfile.mkstemp(suffix='.jpg', prefix='nhit_pdfimg_', dir=temp_dir)
+            os.close(fd)
+            img.save(
+                out_path,
+                format='JPEG',
+                quality=jpeg_quality,
+                optimize=True,
+                progressive=True,
+            )
+            # Drop large in-memory buffers immediately.
+            img.close()
+        return out_path
+    except Exception as exc:
+        logger.warning('Image optimize failed for %s: %s', source_path, exc)
+        return None
+
+
+def download_image(
+    url: str,
+    temp_dir: str,
+    *,
+    optimize: bool = True,
+) -> str | None:
+    """Download an image URL into temp_dir. Returns local path or None.
+
+    When optimize=True (default), the raw download is resized/compressed for PDF
+    display dimensions and the raw file is removed.
+    """
     if not url or not str(url).strip():
         return None
 
     url = str(url).strip()
+    raw_path: str | None = None
+
     if not url.lower().startswith(('http://', 'https://')):
         # Local path fallback
         if os.path.isfile(url):
-            return url
-        return None
-
-    try:
-        request = urllib.request.Request(
-            url,
-            headers={'User-Agent': 'NHIT-AI-Identifier-PDF/1.0'},
-        )
-        with urllib.request.urlopen(request, timeout=IMAGE_TIMEOUT_SECONDS) as response:
-            content_type = (response.headers.get('Content-Type') or '').lower()
-            data = response.read(IMAGE_MAX_BYTES + 1)
-            if len(data) > IMAGE_MAX_BYTES:
-                logger.warning('Image too large, skipping: %s', url)
-                return None
-
-        ext = '.jpg'
-        if 'png' in content_type:
-            ext = '.png'
-        elif 'gif' in content_type:
-            ext = '.gif'
-        elif 'webp' in content_type:
-            ext = '.webp'
+            raw_path = url
         else:
-            path_ext = Path(url.split('?', 1)[0]).suffix.lower()
-            if path_ext in ALLOWED_IMAGE_EXTENSIONS:
-                ext = path_ext
+            return None
+    else:
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={'User-Agent': 'NHIT-AI-Identifier-PDF/1.0'},
+            )
+            with urllib.request.urlopen(request, timeout=IMAGE_TIMEOUT_SECONDS) as response:
+                content_type = (response.headers.get('Content-Type') or '').lower()
+                data = response.read(IMAGE_MAX_BYTES + 1)
+                if len(data) > IMAGE_MAX_BYTES:
+                    logger.warning('Image too large, skipping: %s', url)
+                    return None
 
-        fd, path = tempfile.mkstemp(suffix=ext, prefix='nhit_img_', dir=temp_dir)
-        with os.fdopen(fd, 'wb') as fh:
-            fh.write(data)
-        return path
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
-        logger.warning('Failed to download image %s: %s', url, exc)
-        return None
+            ext = '.jpg'
+            if 'png' in content_type:
+                ext = '.png'
+            elif 'gif' in content_type:
+                ext = '.gif'
+            elif 'webp' in content_type:
+                ext = '.webp'
+            else:
+                path_ext = Path(url.split('?', 1)[0]).suffix.lower()
+                if path_ext in ALLOWED_IMAGE_EXTENSIONS:
+                    ext = path_ext
+
+            fd, raw_path = tempfile.mkstemp(suffix=ext, prefix='nhit_img_', dir=temp_dir)
+            with os.fdopen(fd, 'wb') as fh:
+                fh.write(data)
+            # Release download buffer.
+            del data
+        except Exception as exc:
+            # Broad catch: S3/network hangs must never abort the whole PDF export.
+            logger.warning('Failed to download image %s: %s', url, exc)
+            return None
+
+    if not optimize:
+        return raw_path
+
+    optimized = optimize_image_for_pdf(raw_path, temp_dir)
+    # Remove raw download when we created it (not a caller-supplied local path).
+    if raw_path and raw_path != url and os.path.isfile(raw_path):
+        try:
+            if optimized and optimized != raw_path:
+                os.remove(raw_path)
+        except OSError:
+            pass
+    return optimized or raw_path
+
+
+def prefetch_images(
+    urls: Sequence[str],
+    temp_dir: str,
+    *,
+    max_workers: int = IMAGE_PREFETCH_WORKERS,
+    optimize: bool = True,
+    on_each: Callable[[str, str | None], None] | None = None,
+) -> dict[str, str | None]:
+    """Download unique image URLs (optionally in parallel). Missing/failed URLs map to None.
+
+    Prefer max_workers=1 for large async exports to bound memory.
+    """
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in urls:
+        key = (raw or '').strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+
+    results: dict[str, str | None] = {key: None for key in unique}
+    if not unique:
+        return results
+
+    workers = max(1, min(max_workers, len(unique)))
+
+    def _one(url: str) -> tuple[str, str | None]:
+        path = download_image(url, temp_dir, optimize=optimize)
+        return url, path
+
+    if workers == 1:
+        for url in unique:
+            _, path = _one(url)
+            results[url] = path
+            if on_each:
+                on_each(url, path)
+        return results
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_one, url): url for url in unique}
+        for future in as_completed(futures):
+            url = futures[future]
+            try:
+                _, path = future.result()
+                results[url] = path
+            except Exception as exc:
+                logger.warning('Image prefetch failed for %s: %s', url, exc)
+                results[url] = None
+            if on_each:
+                on_each(url, results[url])
+    return results
 
 
 class TempWorkspace:

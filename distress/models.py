@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 
 class DistressType(models.Model):
     distress_type_id = models.AutoField(primary_key=True)
@@ -108,6 +109,66 @@ class DistressReport(models.Model):
 
     def __str__(self):
         return f'DistressReport {self.id} ({self.username}) — {self.Distress_Type}'
+
+
+class DistressPdfExportJob(models.Model):
+    """Background job for large multi-report distress PDF exports.
+
+    Progress is derived from completed_reports + failed_reports over total_reports.
+    Store output_s3_key only — generate fresh presigned URLs on status reads.
+    """
+
+    STATUS_QUEUED = 'queued'
+    STATUS_PROCESSING = 'processing'
+    STATUS_COMPLETED = 'completed'
+    STATUS_COMPLETED_WITH_ERRORS = 'completed_with_errors'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, 'Queued'),
+        (STATUS_PROCESSING, 'Processing'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_COMPLETED_WITH_ERRORS, 'Completed with errors'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    username = models.CharField(max_length=150, db_index=True)
+    status = models.CharField(
+        max_length=32,
+        choices=STATUS_CHOICES,
+        default=STATUS_QUEUED,
+        db_index=True,
+    )
+    report_ids = models.JSONField(default=list)
+    total_reports = models.PositiveIntegerField(default=0)
+    completed_reports = models.PositiveIntegerField(default=0)
+    failed_reports = models.PositiveIntegerField(default=0)
+    output_s3_key = models.CharField(max_length=1024, blank=True, default='')
+    error_message = models.TextField(blank=True, default='')
+    failure_details = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'distress_pdf_export_jobs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['username', '-created_at'], name='dpej_user_created_idx'),
+            models.Index(fields=['status'], name='dpej_status_idx'),
+        ]
+
+    def __str__(self):
+        return f'DistressPdfExportJob {self.id} ({self.status})'
+
+    @property
+    def progress(self) -> int:
+        total = int(self.total_reports or 0)
+        if total <= 0:
+            return 0
+        done = int(self.completed_reports or 0) + int(self.failed_reports or 0)
+        return int(round((done / total) * 100))
 
 
 class DistressRepairLog(models.Model):

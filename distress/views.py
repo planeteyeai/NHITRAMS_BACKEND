@@ -1051,3 +1051,73 @@ class DistressPDFExportView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+
+class DistressPDFAsyncExportView(APIView):
+    """POST /distress/export/pdf/async/ — queue a multi-report PDF export job."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Queue an asynchronous Road Distress Analysis Report PDF export. '
+            'Returns immediately with a job_id; poll the status endpoint for progress '
+            'and a download URL. The existing GET /distress/export/pdf/ remains '
+            'available for synchronous small exports.'
+        ),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['ids'],
+            properties={
+                'ids': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    description='Report ids to include (ownership enforced).',
+                ),
+            },
+        ),
+        responses={
+            202: openapi.Response('Export job queued'),
+            400: 'Invalid ids',
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'No matching reports',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def post(self, request):
+        from .export_jobs import create_export_job, serialize_job
+
+        ids = request.data.get('ids', None)
+        job = create_export_job(username=request.user.username, ids=ids)
+        return Response(serialize_job(job), status=status.HTTP_202_ACCEPTED)
+
+
+class DistressPDFExportJobStatusView(APIView):
+    """GET /distress/export/pdf/jobs/<job_id>/status/ — job progress + download URL."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsJWTAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description=(
+            'Return export job status. Progress is derived from '
+            '(completed_reports + failed_reports) / total_reports. '
+            'When completed, download_url is a freshly generated S3 presigned URL.'
+        ),
+        responses={
+            200: openapi.Response('Job status'),
+            401: 'Unauthorized',
+            403: 'Forbidden',
+            404: 'Job not found',
+        },
+        security=[{'Bearer': []}],
+        tags=['Distress Reports'],
+    )
+    def get(self, request, job_id):
+        from .export_jobs import get_owned_job, serialize_job
+
+        job = get_owned_job(username=request.user.username, job_id=job_id)
+        return Response(serialize_job(job), status=status.HTTP_200_OK)
+

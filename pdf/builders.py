@@ -27,7 +27,7 @@ from reportlab.platypus import (
 )
 
 from . import styles as S
-from .utils import count_by_field, download_image
+from .utils import count_by_field, download_image, prefetch_images, IMAGE_PREFETCH_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -303,12 +303,23 @@ class BaseReportBuilder(ABC):
     breakdown_type_header: str = ''
     theme: dict = S.DISTRESS
 
-    def __init__(self, records: Sequence[Any], temp_dir: str, generated_at: datetime | None = None):
+    def __init__(
+        self,
+        records: Sequence[Any],
+        temp_dir: str,
+        generated_at: datetime | None = None,
+        *,
+        prefetch: bool = True,
+        prefetch_workers: int = IMAGE_PREFETCH_WORKERS,
+        image_cache: dict[str, str | None] | None = None,
+    ):
         self.records = list(records)
         self.temp_dir = temp_dir
         self.generated_at = generated_at or datetime.now()
         self.styles = S.get_styles()
-        self._image_cache: dict[str, str | None] = {}
+        self._image_cache: dict[str, str | None] = dict(image_cache or {})
+        self._prefetch = prefetch
+        self._prefetch_workers = max(1, int(prefetch_workers))
         self.content_width = A4[0] - 2 * S.MARGIN
 
     def build(self, output_path: str) -> str:
@@ -316,6 +327,11 @@ class BaseReportBuilder(ABC):
         generated_text = (
             f'Generated on {_fmt_datetime(self.generated_at)} • Infra.AI Road Inspection Platform'
         )
+
+        # Optional up-front fetch (sync GET). Async large exports pass prefetch=False
+        # and/or a pre-filled image_cache so images are prepared one report at a time.
+        if self._prefetch:
+            self._prefetch_record_images()
 
         doc = BaseDocTemplate(
             output_path,
@@ -371,6 +387,22 @@ class BaseReportBuilder(ABC):
 
         doc.build(story, canvasmaker=make_canvas)
         return output_path
+
+    def _prefetch_record_images(self) -> None:
+        urls = [
+            (getattr(record, 'Image_URL', '') or '').strip()
+            for record in self.records
+            if (getattr(record, 'Image_URL', '') or '').strip() not in self._image_cache
+        ]
+        if not urls:
+            return
+        fetched = prefetch_images(
+            urls,
+            self.temp_dir,
+            max_workers=self._prefetch_workers,
+            optimize=True,
+        )
+        self._image_cache.update(fetched)
 
     def _build_cover(self) -> list:
         theme = self.theme
@@ -512,8 +544,11 @@ class BaseReportBuilder(ABC):
 
     def _resolve_image(self, url: str) -> str | None:
         key = (url or '').strip()
+        if not key:
+            return None
         if key not in self._image_cache:
-            self._image_cache[key] = download_image(key, self.temp_dir) if key else None
+            # Lazy path: download+optimize one image at a time (async / memory-safe).
+            self._image_cache[key] = download_image(key, self.temp_dir, optimize=True)
         return self._image_cache[key]
 
     @staticmethod

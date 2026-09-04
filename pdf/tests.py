@@ -12,7 +12,7 @@ from authentication.jwt_utils import create_access_token
 from distress.models import DistressReport
 from inventory.models import InventoryReport
 from pdf.builders import DistressReportBuilder, InventoryReportBuilder
-from pdf.utils import TempWorkspace, download_image, filename_for, parse_export_ids
+from pdf.utils import TempWorkspace, download_image, filename_for, parse_export_ids, MAX_PDF_EXPORT_REPORTS
 
 
 DISTRESS_PAYLOAD = {
@@ -126,6 +126,17 @@ class DistressPDFExportTests(TestCase):
         body = _pdf_bytes(response)
         self.assertTrue(body.startswith(b'%PDF'), body[:16])
         self.assertNotEqual(body[:2], b'\x1f\x8b')
+
+    def test_export_rejects_more_than_max_reports(self):
+        ids = []
+        for i in range(MAX_PDF_EXPORT_REPORTS + 1):
+            report = self._create(Distress_Type=f'Type{i}')
+            ids.append(str(report.id))
+        response = self.client.get(
+            f'/distress/export/pdf/?ids={",".join(ids)}',
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_builder_placeholder_when_no_image(self):
         report = self._create(Image_URL='')
