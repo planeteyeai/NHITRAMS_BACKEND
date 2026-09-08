@@ -42,6 +42,7 @@ from .services.inventory_filter_response import (
     INVENTORY_FILTER_HEADER_ROW_COUNT,
     build_inventory_filter_groups,
 )
+from .services.inventory_summary import build_inventory_summary_aggregates
 from .services.inventory_filter_perf import (
     log_inventory_filter_performance,
     resolve_request_id,
@@ -54,6 +55,7 @@ from nhit.caching.inventory_filter_count import (
     get_cached_inventory_filter_count,
     inventory_filter_filter_hash,
 )
+from nhit.caching.inventory_summary import get_cached_inventory_summary
 from nhit.caching.service import get_or_set_cached_value
 from django.db import connection, transaction
 from datetime import datetime
@@ -147,8 +149,73 @@ class InventoryFilterView(APIView):
                 'cache_hit': page_hit,
                 'count_ms': count_ms,
                 'select_ms': page_timings.get('select_ms'),
+                'db_transfer_ms': page_timings.get('db_transfer_ms'),
+                'orm_materialize_ms': page_timings.get('orm_materialize_ms'),
                 'serialize_ms': page_timings.get('serialize_ms'),
+                'grouping_ms': page_timings.get('grouping_ms'),
                 'build_ms': page_meta.get('build_ms'),
+                'render_ms': render_ms,
+                'total_ms': total_ms,
+                'query_count': query_count,
+                'response_bytes': response_bytes,
+            })
+
+        return response
+
+
+class InventorySummaryView(APIView):
+    """Compact asset quantity totals for the same filters as inventory_filter.
+
+    Aggregates in PostgreSQL (one query). Ignores page/page_size for the result
+    while accepting the same request body for client compatibility.
+    """
+
+    @swagger_auto_schema(
+        operation_description=(
+            "Aggregate inventory quantity totals for the filtered dataset. "
+            "Same request body as /inventory_filter/; page/page_size are ignored."
+        ),
+        request_body=InventoryFilterSerializer,
+        responses={200: 'Asset quantity summary object', 400: 'Bad Request'},
+    )
+    def post(self, request):
+        request_started = time.perf_counter()
+        request_id = resolve_request_id(request)
+
+        serializer = InventoryFilterSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        filter_hash = inventory_filter_filter_hash(data)
+        aggregate_timings: dict = {}
+
+        def build_summary():
+            return build_inventory_summary_aggregates(data, timings=aggregate_timings)
+
+        summary, cache_meta = get_cached_inventory_summary(
+            payload=data,
+            builder=build_summary,
+        )
+        response = Response(summary, status=status.HTTP_200_OK)
+
+        total_ms = round((time.perf_counter() - request_started) * 1000, 2)
+        cache_hit = bool(cache_meta.get('cache_hit'))
+        query_count = 0 if cache_hit else 1
+
+        if should_log_inventory_filter_perf(total_ms):
+            render_started = time.perf_counter()
+            response_bytes = len(JSONRenderer().render(summary))
+            render_ms = round((time.perf_counter() - render_started) * 1000, 2)
+            log_inventory_filter_performance({
+                'request_id': request_id,
+                'endpoint': '/inventory_summary/',
+                'page': data.get('page'),
+                'page_size': data.get('page_size'),
+                'filter_hash': filter_hash,
+                'cache_hit': cache_hit,
+                'aggregate_ms': aggregate_timings.get('aggregate_ms'),
+                'build_ms': cache_meta.get('build_ms'),
                 'render_ms': render_ms,
                 'total_ms': total_ms,
                 'query_count': query_count,

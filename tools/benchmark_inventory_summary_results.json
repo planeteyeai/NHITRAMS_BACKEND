@@ -1,0 +1,69 @@
+{
+  "project": "Kothakota to Kurnool",
+  "date": "2026-07-28",
+  "cold_service": {
+    "total_ms": 2291.75,
+    "aggregate_ms": 2290.72,
+    "response_bytes": 525,
+    "gzip_bytes": 337,
+    "rss_before_mb": 74.5,
+    "rss_after_mb": 81.3,
+    "summary_sample_keys": [
+      "trees",
+      "culvert",
+      "street_lights",
+      "bridges",
+      "traffic_signals"
+    ],
+    "summary": {
+      "trees": 12612,
+      "culvert": 147,
+      "street_lights": 1049,
+      "bridges": 0,
+      "traffic_signals": 0,
+      "bus_stop": 44,
+      "truck_layby": 0,
+      "toll_plaza": 3,
+      "adjacent_road": 63,
+      "toilet_blocks": 3,
+      "rest_area": 0,
+      "rcc_drain": 0,
+      "fuel_station": 28,
+      "emergency_call_box": 62,
+      "tunnels": 0,
+      "footpath": 0,
+      "junction": 21,
+      "sign_boards": 1313,
+      "solar_blinker": 119,
+      "median_plants": 0,
+      "service_road": 21.334000000000003,
+      "km_stones": 230,
+      "crash_barrier": 62777,
+      "median_opening": 42,
+      "kerb": 148521,
+      "guard_post": 617,
+      "delineators": 0,
+      "pedestrian_guard_rail": 0,
+      "slip_roads": 14,
+      "bus_bays": 44
+    }
+  },
+  "query_count_cold_debug": 1,
+  "aggregate_sql_preview": "SELECT COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Trees' THEN \"inventory_wide\".\"Trees\" ELSE 0.0 END), 0.0) AS \"trees\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Culvert' THEN \"inventory_wide\".\"Culvert\" ELSE 0.0 END), 0.0) AS \"culvert\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Street Lights' THEN \"inventory_wide\".\"Street Lights\" ELSE 0.0 END), 0.0) AS \"street_lights\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Bridges' THEN \"inventory_wide\".\"Bridges\" ELSE 0.0 END), 0.0) AS \"bridges\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Traffic Signals' THEN \"inventory_wide\".\"Traffic Signals\" ELSE 0.0 END), 0.0) AS \"traffic_signals\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Bus Stop' THEN \"inventory_wide\".\"Bus Stop\" ELSE 0.0 END), 0.0) AS \"bus_stop\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Truck Layby' THEN \"inventory_wide\".\"Truck LayBy\" ELSE 0.0 END), 0.0) AS \"truck_layby\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Toll Plaza' THEN \"inventory_wide\".\"Toll Plaza\" ELSE 0.0 END), 0.0) AS \"toll_plaza\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Adjacent Road' THEN \"inventory_wide\".\"Adjacent Road\" ELSE 0.0 END), 0.0) AS \"adjacent_road\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Toilet Blocks' THEN \"inventory_wide\".\"Toilet Blocks\" ELSE 0.0 END), 0.0) AS \"toilet_blocks\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Rest Area' THEN \"inventory_wide\".\"Rest Area\" ELSE 0.0 END), 0.0) AS \"rest_area\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'RCC Drain' THEN \"inventory_wide\".\"RCC Drain\" ELSE 0.0 END), 0.0) AS \"rcc_drain\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Fuel Station' THEN \"inventory_wide\".\"Fuel Station\" ELSE 0.0 END), 0.0) AS \"fuel_station\", COALESCE(SUM(CASE WHEN \"inventory_wide\".\"Asset type\" = 'Emergency Call Box' THEN \"inventory_wide\".\"Emergency Call Box\" ELSE 0.0 END), 0.0) AS \"emergency_call_box\", COA",
+  "explain_analyze": "Finalize Aggregate  (cost=44626.54..44626.55 rows=1 width=240) (actual time=260.222..265.134 rows=1.00 loops=1)\n  Buffers: shared hit=13672\n  ->  Gather  (cost=44626.18..44626.39 rows=2 width=240) (actual time=259.008..265.118 rows=3.00 loops=1)\n        Workers Planned: 2\n        Workers Launched: 2\n        Buffers: shared hit=13672\n        ->  Partial Aggregate  (cost=43626.18..43626.19 rows=1 width=240) (actual time=250.326..250.327 rows=1.00 loops=3)\n              Buffers: shared hit=13672\n              ->  Parallel Bitmap Heap Scan on inventory_wide  (cost=2751.52..38949.18 rows=31180 width=249) (actual time=11.675..53.653 rows=76841.00 loops=3)\n                    Recheck Cond: ((\"Project Name\" = 'Kothakota to Kurnool'::text) AND (\"Date\" = '2026-07-28'::date))\n                    Filter: ((\"Chainage start\" >= '0'::double precision) AND (\"Chainage end\" <= '99999'::double precision))\n                    Heap Blocks: exact=4008\n                    Buffers: shared hit=13672\n                    Worker 0:  Heap Blocks: exact=4024\n                    Worker 1:  Heap Blocks: exact=3948\n                    ->  Bitmap Index Scan on inventory_wide_project_date_id_idx  (cost=0.00..2732.82 rows=74839 width=0) (actual time=13.047..13.047 rows=230523.00 loops=1)\n                          Index Cond: ((\"Project Name\" = 'Kothakota to Kurnool'::text) AND (\"Date\" = '2026-07-28'::date))\n                          Index Searches: 1\n                          Buffers: shared hit=1650\nPlanning:\n  Buffers: shared hit=5\nPlanning Time: 2.218 ms\nExecution Time: 265.269 ms",
+  "http": {
+    "cold_ms": 1118.41,
+    "hit_ms": 187.04,
+    "page_variant_ms": 198.17,
+    "cold_status": 200,
+    "hit_status": 200,
+    "bodies_equal": true,
+    "response_bytes": 525
+  },
+  "inventory_filter_page_proxy": {
+    "status": 200,
+    "ms": 6474.14,
+    "response_bytes": 3824592,
+    "gzip_bytes": 209237
+  }
+}

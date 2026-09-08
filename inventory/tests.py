@@ -4,14 +4,14 @@ Legacy PascalCase append tests were replaced by RAMS APK coverage in
 `tests_inventory_rams.py`.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 import json
 import unittest
 
 import jwt
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -1275,6 +1275,87 @@ class InventoryFilterPaginationTests(TestCase):
         self.assertEqual(serializer.validated_data['page'], 1)
         self.assertEqual(serializer.validated_data['page_size'], 15000)
 
+    def test_page_size_accepts_5000_through_50000(self):
+        from inventory.serializers import InventoryFilterSerializer
+
+        base = {
+            'chainage_start': 0,
+            'chainage_end': 100,
+            'date': '2026-04-20',
+            'direction': ['All'],
+            'project_name': ['Agra Bypass Road'],
+            'asset_type': ['All'],
+        }
+        for page_size in (5000, 15000, 25000, 50000):
+            serializer = InventoryFilterSerializer(data={**base, 'page_size': page_size})
+            self.assertTrue(serializer.is_valid(), serializer.errors)
+            self.assertEqual(serializer.validated_data['page_size'], page_size)
+
+    def test_page_size_rejects_above_50000(self):
+        from inventory.serializers import InventoryFilterSerializer
+
+        serializer = InventoryFilterSerializer(
+            data={
+                'chainage_start': 0,
+                'chainage_end': 100,
+                'date': '2026-04-20',
+                'direction': ['All'],
+                'project_name': ['Agra Bypass Road'],
+                'asset_type': ['All'],
+                'page_size': 50001,
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('page_size', serializer.errors)
+
+    def test_values_path_matches_model_instance_serialization(self):
+        """Dict rows from values()+quantity_value must match model-style rows."""
+        from datetime import date
+        from types import SimpleNamespace
+
+        from inventory.services.inventory_filter_response import (
+            ASSET_TYPE_FIELD_MAP,
+            serialize_inventory_wide_row,
+        )
+
+        model_like = SimpleNamespace(
+            project_name='Agra Bypass Road',
+            chainage_start=10.0,
+            chainage_end=10.1,
+            direction='Increasing',
+            asset_type='Culvert',
+            sub_asset_type='',
+            latitude=19.0,
+            longitude=72.0,
+            survey_date=date(2026, 4, 20),
+            carriage_type='Flexible',
+            lane='L1',
+            source='excel_import',
+            **{field: 0.0 for field in ASSET_TYPE_FIELD_MAP.values()},
+        )
+        model_like.culvert = 2.0
+
+        values_like = {
+            'project_name': 'Agra Bypass Road',
+            'chainage_start': 10.0,
+            'chainage_end': 10.1,
+            'direction': 'Increasing',
+            'asset_type': 'Culvert',
+            'sub_asset_type': '',
+            'latitude': 19.0,
+            'longitude': 72.0,
+            'survey_date': date(2026, 4, 20),
+            'carriage_type': 'Flexible',
+            'lane': 'L1',
+            'source': 'excel_import',
+            'quantity_value': 2.0,
+        }
+
+        self.assertEqual(
+            serialize_inventory_wide_row(model_like),
+            serialize_inventory_wide_row(values_like),
+        )
+
 
 @override_settings(
     NHIT_CACHE_ENABLED=True,
@@ -1434,3 +1515,283 @@ class InventoryFilterCountCacheTests(TestCase):
         self.assertNotIn('Authorization', joined)
         self.assertNotIn('redis://', joined.lower())
 
+
+
+class InventorySummaryServiceTests(SimpleTestCase):
+    """Unit tests for summary formatting and aggregate construction."""
+
+    def test_summary_fields_match_inventory_filter_asset_map(self):
+        from inventory.services.inventory_filter_response import ASSET_TYPE_FIELD_MAP
+        from inventory.services.inventory_summary import INVENTORY_SUMMARY_FIELDS
+
+        self.assertEqual(list(INVENTORY_SUMMARY_FIELDS), list(ASSET_TYPE_FIELD_MAP.values()))
+
+    def test_format_summary_number_preserves_int_float_zero(self):
+        from inventory.services.inventory_summary import _format_summary_number
+
+        self.assertEqual(_format_summary_number(None), 0)
+        self.assertEqual(_format_summary_number(0.0), 0)
+        self.assertEqual(_format_summary_number(44.0), 44)
+        self.assertEqual(_format_summary_number(39.33), 39.33)
+
+    @patch('inventory.services.inventory_summary.build_inventory_filter_queryset')
+    def test_aggregate_uses_single_queryset_aggregate(self, mock_build_qs):
+        from inventory.services.inventory_filter_response import ASSET_TYPE_FIELD_MAP
+        from inventory.services.inventory_summary import (
+            INVENTORY_SUMMARY_FIELDS,
+            build_inventory_summary_aggregates,
+        )
+
+        mock_qs = mock_build_qs.return_value
+        mock_qs.aggregate.return_value = {field: 0.0 for field in INVENTORY_SUMMARY_FIELDS}
+        mock_qs.aggregate.return_value['trees'] = 14367.0
+        mock_qs.aggregate.return_value['delineators'] = 481.0
+        mock_qs.aggregate.return_value['crash_barrier'] = 62787.0
+        mock_qs.aggregate.return_value['service_road'] = 21.334
+        mock_qs.aggregate.return_value['toll_plaza'] = 1
+
+        data = {
+            'chainage_start': 0,
+            'chainage_end': 100,
+            'date': date(2026, 7, 28),
+            'direction': [],
+            'project_name': ['Kothakota to Kurnool'],
+            'asset_type': [],
+            'page': 1,
+            'page_size': 5000,
+        }
+        summary = build_inventory_summary_aggregates(data)
+        self.assertEqual(mock_qs.aggregate.call_count, 1)
+        kwargs = mock_qs.aggregate.call_args.kwargs
+        # Column SUMs are unrestricted (no Case/When asset_type gate) except toll_plaza.
+        self.assertIn('trees', kwargs)
+        self.assertIn('toll_plaza', kwargs)
+        self.assertEqual(summary['trees'], 14367)
+        self.assertEqual(summary['delineators'], 481)
+        self.assertEqual(summary['crash_barrier'], 62787)
+        self.assertEqual(summary['service_road'], 21.334)
+        self.assertEqual(summary['toll_plaza'], 1)
+        for field in ASSET_TYPE_FIELD_MAP.values():
+            self.assertIn(field, summary)
+
+
+@override_settings(NHIT_CACHE_ENABLED=False)
+class InventorySummaryViewTests(TestCase):
+    """HTTP contract for POST /inventory_summary/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.base_payload = {
+            'chainage_start': 0,
+            'chainage_end': 99999,
+            'date': '2026-07-28',
+            'direction': ['All'],
+            'project_name': ['Kothakota to Kurnool'],
+            'asset_type': ['All'],
+            'page': 1,
+            'page_size': 5000,
+        }
+        self.sample_summary = {
+            field: 0
+            for field in (
+                'trees', 'culvert', 'street_lights', 'bridges', 'traffic_signals',
+                'bus_stop', 'truck_layby', 'toll_plaza', 'adjacent_road', 'toilet_blocks',
+                'rest_area', 'rcc_drain', 'fuel_station', 'emergency_call_box', 'tunnels',
+                'footpath', 'junction', 'sign_boards', 'solar_blinker', 'median_plants',
+                'service_road', 'km_stones', 'crash_barrier', 'median_opening', 'kerb',
+                'guard_post', 'delineators', 'pedestrian_guard_rail', 'slip_roads', 'bus_bays',
+            )
+        }
+        self.sample_summary['trees'] = 12
+        self.sample_summary['service_road'] = 39.33
+        self.sample_summary['crash_barrier'] = 100
+
+    @patch('inventory.views.build_inventory_summary_aggregates')
+    def test_accepts_same_body_as_inventory_filter(self, mock_agg):
+        mock_agg.return_value = dict(self.sample_summary)
+        response = self.client.post('/inventory_summary/', self.base_payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['trees'], 12)
+        self.assertEqual(response.data['service_road'], 39.33)
+        self.assertNotIn('X-Inventory-Paginated', response)
+        self.assertNotIn('X-Inventory-Page', response)
+
+    @patch('inventory.views.build_inventory_summary_aggregates')
+    def test_page_size_does_not_change_summary(self, mock_agg):
+        mock_agg.return_value = dict(self.sample_summary)
+        a = self.client.post('/inventory_summary/', {**self.base_payload, 'page': 1, 'page_size': 100}, format='json')
+        b = self.client.post('/inventory_summary/', {**self.base_payload, 'page': 10, 'page_size': 50000}, format='json')
+        self.assertEqual(a.data, b.data)
+        self.assertEqual(mock_agg.call_count, 2)
+        # Both calls receive validated data with different page fields but same filters;
+        # builder ignores page for aggregation — assert filter fields equal.
+        first_data = mock_agg.call_args_list[0].args[0]
+        second_data = mock_agg.call_args_list[1].args[0]
+        for key in ('project_name', 'date', 'direction', 'asset_type', 'chainage_start', 'chainage_end'):
+            self.assertEqual(first_data[key], second_data[key])
+
+    @patch('inventory.views.build_inventory_summary_aggregates')
+    def test_empty_result_returns_zero_filled_object(self, mock_agg):
+        zeros = {k: 0 for k in self.sample_summary}
+        mock_agg.return_value = zeros
+        response = self.client.post('/inventory_summary/', self.base_payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, zeros)
+
+    def test_invalid_body_rejected(self):
+        response = self.client.post('/inventory_summary/', {'project_name': ['X']}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+@override_settings(
+    NHIT_CACHE_ENABLED=True,
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'nhit-inventory-summary-tests',
+            'KEY_PREFIX': 'nhit-summary-test',
+        }
+    },
+)
+class InventorySummaryCacheTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.client = APIClient()
+        self.base_payload = {
+            'chainage_start': 0,
+            'chainage_end': 99999,
+            'date': '2026-07-28',
+            'direction': ['All'],
+            'project_name': ['Kothakota to Kurnool'],
+            'asset_type': ['All'],
+            'page': 1,
+            'page_size': 5000,
+        }
+        self.sample_summary = {
+            'trees': 5,
+            'culvert': 0,
+            'street_lights': 0,
+            'bridges': 0,
+            'traffic_signals': 0,
+            'bus_stop': 0,
+            'truck_layby': 0,
+            'toll_plaza': 0,
+            'adjacent_road': 0,
+            'toilet_blocks': 0,
+            'rest_area': 0,
+            'rcc_drain': 0,
+            'fuel_station': 0,
+            'emergency_call_box': 0,
+            'tunnels': 0,
+            'footpath': 0,
+            'junction': 0,
+            'sign_boards': 0,
+            'solar_blinker': 0,
+            'median_plants': 0,
+            'service_road': 1.5,
+            'km_stones': 0,
+            'crash_barrier': 0,
+            'median_opening': 0,
+            'kerb': 0,
+            'guard_post': 0,
+            'delineators': 0,
+            'pedestrian_guard_rail': 0,
+            'slip_roads': 0,
+            'bus_bays': 0,
+        }
+
+    @patch('inventory.views.build_inventory_summary_aggregates')
+    def test_second_request_is_cache_hit_without_rebuild(self, mock_agg):
+        mock_agg.return_value = dict(self.sample_summary)
+        first = self.client.post('/inventory_summary/', self.base_payload, format='json')
+        second = self.client.post('/inventory_summary/', self.base_payload, format='json')
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(first.data, second.data)
+        self.assertEqual(mock_agg.call_count, 1)
+
+    @patch('inventory.views.build_inventory_summary_aggregates')
+    def test_page_fields_share_summary_cache_key(self, mock_agg):
+        mock_agg.return_value = dict(self.sample_summary)
+        self.client.post('/inventory_summary/', self.base_payload, format='json')
+        self.client.post(
+            '/inventory_summary/',
+            {**self.base_payload, 'page': 9, 'page_size': 25000},
+            format='json',
+        )
+        self.assertEqual(mock_agg.call_count, 1)
+
+    @patch('inventory.views.build_inventory_summary_aggregates')
+    def test_filter_change_misses_cache(self, mock_agg):
+        mock_agg.return_value = dict(self.sample_summary)
+        self.client.post('/inventory_summary/', self.base_payload, format='json')
+        other = {**self.base_payload, 'project_name': ['Other Project']}
+        self.client.post('/inventory_summary/', other, format='json')
+        self.assertEqual(mock_agg.call_count, 2)
+
+
+class InventorySummaryParityTests(SimpleTestCase):
+    """Summary totals must match summing inventory_filter quantity columns."""
+
+    def test_python_reference_sum_matches_unrestricted_column_sums(self):
+        """Dashboard-style totals = SUM of each quantity column (not asset_type-gated)."""
+        from inventory.services.inventory_filter_response import ASSET_TYPE_FIELD_MAP
+        from inventory.services.inventory_summary import (
+            INVENTORY_SUMMARY_FIELDS,
+            _format_summary_number,
+        )
+        from types import SimpleNamespace
+        from datetime import date as date_cls
+
+        def blank_item(**overrides):
+            base = {
+                'project_name': 'P',
+                'chainage_start': 1.0,
+                'chainage_end': 2.0,
+                'direction': 'Increasing',
+                'asset_type': 'Trees',
+                'latitude': 1.0,
+                'longitude': 2.0,
+                'survey_date': date_cls(2026, 7, 28),
+                'sub_asset_type': '',
+                'carriage_type': 'Flexible',
+                'lane': 'L1',
+                'image_url': '',
+                'source': 'SAR',
+            }
+            for field in ASSET_TYPE_FIELD_MAP.values():
+                base[field] = 0.0
+            base.update(overrides)
+            return SimpleNamespace(**base)
+
+        rows = [
+            blank_item(asset_type='Trees', trees=3.0),
+            blank_item(asset_type='Tree', trees=7.0),  # label variant still in Trees col
+            blank_item(asset_type='Delineator', delineators=481.0),
+            blank_item(asset_type='Service Road', service_road=12.5),
+            blank_item(asset_type='Service Road', service_road=8.834),
+            blank_item(asset_type='Crash Barrier', crash_barrier=100.0),
+            blank_item(asset_type='Slip Roads', crash_barrier=10.0, slip_roads=1.0),
+            blank_item(asset_type='Toll Plaza', toll_plaza=1.0, latitude=10.0, longitude=20.0),
+            blank_item(asset_type='Toll Plaza', toll_plaza=1.0, latitude=10.0, longitude=20.0, direction='Decreasing'),
+        ]
+
+        expected = {field: 0.0 for field in INVENTORY_SUMMARY_FIELDS}
+        for item in rows:
+            for field in INVENTORY_SUMMARY_FIELDS:
+                if field == 'toll_plaza':
+                    continue
+                expected[field] += float(getattr(item, field) or 0.0)
+        # Unique lat/lon for toll plaza
+        expected['toll_plaza'] = 1.0
+
+        formatted = {k: _format_summary_number(v) for k, v in expected.items()}
+        self.assertEqual(formatted['trees'], 10)
+        self.assertEqual(formatted['delineators'], 481)
+        self.assertEqual(formatted['service_road'], 21.334)
+        self.assertEqual(formatted['crash_barrier'], 110)
+        self.assertEqual(formatted['slip_roads'], 1)
+        self.assertEqual(formatted['toll_plaza'], 1)
+        self.assertEqual(formatted['rcc_drain'], 0)

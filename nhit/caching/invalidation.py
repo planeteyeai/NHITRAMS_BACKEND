@@ -6,6 +6,7 @@ from nhit.caching.constants import (
     CACHE_NS_AIS_FILTER,
     CACHE_NS_DISTRESS_REPORT_FILTER,
     CACHE_NS_INVENTORY_FILTER,
+    CACHE_NS_INVENTORY_SUMMARY,
     CACHE_NS_INVENTORY_MASTER,
     CACHE_NS_LABOUR_MASTERS,
     CACHE_NS_MATERIALS_LIST,
@@ -18,6 +19,10 @@ from nhit.caching.service import bump_namespace_version
 
 def invalidate_inventory_filter_cache() -> int:
     return bump_namespace_version(CACHE_NS_INVENTORY_FILTER)
+
+
+def invalidate_inventory_summary_cache() -> int:
+    return bump_namespace_version(CACHE_NS_INVENTORY_SUMMARY)
 
 
 def invalidate_distress_report_filter_cache() -> int:
@@ -55,6 +60,7 @@ def invalidate_materials_list_cache() -> int:
 def invalidate_all_filter_caches() -> None:
     for invalidate in (
         invalidate_inventory_filter_cache,
+        invalidate_inventory_summary_cache,
         invalidate_distress_report_filter_cache,
         invalidate_traffic_filter_cache,
         invalidate_pms_filter_cache,
