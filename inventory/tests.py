@@ -1179,7 +1179,7 @@ class InventoryFilterPaginationTests(TestCase):
         response = self.client.post('/inventory_filter/', self.payload, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data, self.mock_groups)
+        self.assertEqual(json.loads(response.content), self.mock_groups)
         self.assertEqual(response['X-Inventory-Paginated'], 'true')
         self.assertEqual(response['X-Inventory-Page'], '1')
         self.assertEqual(response['X-Inventory-Page-Size'], '5000')

@@ -1,0 +1,132 @@
+{
+  "implementation": true,
+  "project": "Kothakota to Kurnool",
+  "date": "2026-07-28",
+  "page": 1,
+  "page_size": 50000,
+  "samples": 20,
+  "accepts_gzip_helper_ok": true,
+  "sizes": {
+    "http_gzip_body": 640611,
+    "json_uncompressed": 13812337,
+    "redis_with_magic": 640617
+  },
+  "api_hit_accept_gzip_ms": {
+    "n": 20,
+    "samples_ms": [
+      3271.89,
+      3526.53,
+      3575.68,
+      2550.5,
+      2491.52,
+      3371.2,
+      2241.42,
+      2365.29,
+      2231.32,
+      2464.21,
+      2244.14,
+      4219.14,
+      2644.51,
+      2317.7,
+      2324.14,
+      2180.89,
+      2243.5,
+      2199.08,
+      2080.84,
+      2068.8
+    ],
+    "min": 2068.8,
+    "median": 2344.71,
+    "p95": 3575.68,
+    "max": 4219.14,
+    "mean": 2630.61
+  },
+  "api_hit_no_accept_gzip_ms": {
+    "n": 20,
+    "samples_ms": [
+      2186.67,
+      2131.74,
+      2018.25,
+      2657.03,
+      2035.53,
+      1953.11,
+      2013.33,
+      1925.02,
+      1905.47,
+      1953.2,
+      2418.84,
+      2577.94,
+      2423.47,
+      2074.54,
+      2316.08,
+      2379.73,
+      2044.0,
+      1957.74,
+      1946.16,
+      2488.54
+    ],
+    "min": 1905.47,
+    "median": 2059.27,
+    "p95": 2577.94,
+    "max": 2657.03,
+    "mean": 2170.32
+  },
+  "modeled_old_cpu_after_redis_ms": {
+    "n": 10,
+    "samples_ms": [
+      342.23,
+      360.21,
+      363.56,
+      326.01,
+      329.9,
+      329.34,
+      324.99,
+      332.9,
+      314.87,
+      320.15
+    ],
+    "min": 314.87,
+    "median": 329.62,
+    "p95": 363.56,
+    "max": 363.56,
+    "mean": 334.42
+  },
+  "modeled_new_extract_cpu_ms": {
+    "n": 10,
+    "samples_ms": [
+      0.28,
+      0.16,
+      0.32,
+      0.23,
+      0.33,
+      0.23,
+      0.46,
+      0.14,
+      0.31,
+      0.19
+    ],
+    "min": 0.14,
+    "median": 0.25,
+    "p95": 0.46,
+    "max": 0.46,
+    "mean": 0.26
+  },
+  "rss_mb_samples": [
+    113.88,
+    113.89,
+    114.43,
+    115.1,
+    115.73
+  ],
+  "phase3_investigation_fair_baseline_ms": {
+    "current_total": 826.39,
+    "candidate_total": 472.33,
+    "current_cpu": 323.25,
+    "candidate_cpu": 0.19
+  },
+  "headers_sample": {
+    "Content-Encoding": "gzip",
+    "Content-Type": "application/json",
+    "X-Inventory-Row-Count": "230523"
+  }
+}

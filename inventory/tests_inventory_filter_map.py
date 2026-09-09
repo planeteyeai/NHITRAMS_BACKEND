@@ -284,7 +284,7 @@ class InventoryFilterIntegratedMapViewTests(TestCase):
 
     @patch('inventory.views.build_inventory_filter_queryset')
     @patch('inventory.views.get_cached_inventory_filter_count')
-    @patch('inventory.views.get_or_set_cached_value')
+    @patch('inventory.views.get_cached_inventory_filter_page')
     def test_legacy_path_still_returns_headers(
         self, mock_page_cache, mock_count, mock_qs
     ):

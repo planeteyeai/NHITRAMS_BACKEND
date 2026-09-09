@@ -51,7 +51,8 @@ from .services.inventory_filter_perf import (
     should_log_inventory_filter_perf,
 )
 from .utils import apply_media_uploads_to_payload, upload_dpr_images
-from nhit.caching import CACHE_NS_INVENTORY_FILTER, CACHE_NS_INVENTORY_MASTER, cached_filter_response, cached_get_response
+from nhit.caching import CACHE_NS_INVENTORY_MASTER, cached_filter_response, cached_get_response
+from nhit.caching.accept_encoding import accepts_gzip_encoding
 from nhit.caching.constants import CACHE_TTL_INVENTORY_FILTER
 from nhit.caching.inventory_filter_count import (
     get_cached_inventory_filter_count,
@@ -61,9 +62,12 @@ from nhit.caching.inventory_filter_map import (
     get_cached_inventory_filter_map,
     inventory_filter_map_filter_hash,
 )
+from nhit.caching.inventory_filter_page import get_cached_inventory_filter_page
 from nhit.caching.inventory_summary import get_cached_inventory_summary
 from nhit.caching.service import get_or_set_cached_value
 from django.db import connection, transaction
+from django.http import HttpResponse
+from django.utils.cache import patch_vary_headers
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -132,14 +136,37 @@ class InventoryFilterView(APIView):
                 timings=page_timings,
             )
 
-        page_data, page_meta = get_or_set_cached_value(
-            namespace=CACHE_NS_INVENTORY_FILTER,
+        accept_gzip = accepts_gzip_encoding(request.META.get('HTTP_ACCEPT_ENCODING'))
+        serve_mode = 'gzip_bytes' if accept_gzip else 'json_bytes'
+
+        page_body, page_meta = get_cached_inventory_filter_page(
             payload=data,
             builder=build_response,
             timeout=CACHE_TTL_INVENTORY_FILTER,
-            use_lock=True,
+            serve_mode=serve_mode,
         )
-        response = Response(page_data, status=status.HTTP_200_OK)
+
+        response_path = page_meta.get('response_path') or 'python_object'
+        if response_path == 'direct_gzip_bytes':
+            response = HttpResponse(
+                page_body,
+                content_type='application/json',
+                status=status.HTTP_200_OK,
+            )
+            response['Content-Encoding'] = 'gzip'
+            response['Content-Length'] = str(len(page_body))
+            patch_vary_headers(response, ('Accept-Encoding',))
+        elif response_path == 'direct_json_bytes':
+            response = HttpResponse(
+                page_body,
+                content_type='application/json',
+                status=status.HTTP_200_OK,
+            )
+            response['Content-Length'] = str(len(page_body))
+            patch_vary_headers(response, ('Accept-Encoding',))
+        else:
+            # Legacy/compat: Python nested structure via DRF.
+            response = Response(page_body, status=status.HTTP_200_OK)
 
         has_more = (offset + page_size) < total_count
         response[INVENTORY_FILTER_HEADER_PAGINATED] = 'true'
@@ -155,10 +182,21 @@ class InventoryFilterView(APIView):
         query_count = (0 if count_hit else 1) + (0 if page_hit else 1)
 
         if should_log_inventory_filter_perf(total_ms):
-            # Measure JSON size without calling Response.render() (renderer not set yet).
-            render_started = time.perf_counter()
-            response_bytes = len(JSONRenderer().render(page_data))
-            render_ms = round((time.perf_counter() - render_started) * 1000, 2)
+            if response_path == 'direct_gzip_bytes':
+                render_ms = 0
+                response_bytes = int(page_meta.get('http_body_bytes') or len(page_body))
+                http_gzip = 'passthrough'
+            elif response_path == 'direct_json_bytes':
+                render_ms = page_meta.get('render_ms')
+                if render_ms is None and page_hit:
+                    render_ms = 0
+                response_bytes = int(page_meta.get('http_body_bytes') or len(page_body))
+                http_gzip = 'skipped'
+            else:
+                render_started = time.perf_counter()
+                response_bytes = len(JSONRenderer().render(page_body))
+                render_ms = round((time.perf_counter() - render_started) * 1000, 2)
+                http_gzip = 'middleware'
             log_inventory_filter_performance({
                 'request_id': request_id,
                 'endpoint': '/inventory_filter/',
@@ -168,6 +206,9 @@ class InventoryFilterView(APIView):
                 'filter_hash': filter_hash,
                 'count_cache_hit': count_hit,
                 'cache_hit': page_hit,
+                'cache_format': page_meta.get('cache_repr'),
+                'response_path': response_path,
+                'accept_gzip': accept_gzip,
                 'count_ms': count_ms,
                 'select_ms': page_timings.get('select_ms'),
                 'db_transfer_ms': page_timings.get('db_transfer_ms'),
@@ -175,7 +216,10 @@ class InventoryFilterView(APIView):
                 'serialize_ms': page_timings.get('serialize_ms'),
                 'grouping_ms': page_timings.get('grouping_ms'),
                 'build_ms': page_meta.get('build_ms'),
+                'redis_get_ms': page_meta.get('redis_get_ms'),
+                'cache_decode_ms': page_meta.get('decode_ms') or page_meta.get('extract_ms'),
                 'render_ms': render_ms,
+                'http_gzip': http_gzip,
                 'total_ms': total_ms,
                 'query_count': query_count,
                 'response_bytes': response_bytes,

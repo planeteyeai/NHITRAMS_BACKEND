@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from unittest.mock import MagicMock, patch
 
@@ -149,7 +150,7 @@ class InventoryFilterSevenDayCacheIntegrationTests(TestCase):
         }
         self.mock_groups = [[{'project_name': 'Agra Bypass Road', 'chainage_end': 1.0}]]
 
-    @patch('inventory.views.get_or_set_cached_value')
+    @patch('inventory.views.get_cached_inventory_filter_page')
     @patch('inventory.views.get_cached_inventory_filter_count')
     @patch('inventory.views.build_inventory_filter_queryset')
     def test_legacy_page_cache_passes_604800_timeout(
@@ -161,7 +162,6 @@ class InventoryFilterSevenDayCacheIntegrationTests(TestCase):
         response = self.client.post('/inventory_filter/', self.base_payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(mock_page_cache.call_args.kwargs['timeout'], 604800)
-        self.assertEqual(mock_page_cache.call_args.kwargs['namespace'], CACHE_NS_INVENTORY_FILTER)
 
     @patch('inventory.views.build_inventory_filter_groups')
     @patch('inventory.views.build_inventory_filter_queryset')
@@ -174,7 +174,7 @@ class InventoryFilterSevenDayCacheIntegrationTests(TestCase):
         second = self.client.post('/inventory_filter/', self.base_payload, format='json')
         self.assertEqual(first.status_code, status.HTTP_200_OK)
         self.assertEqual(second.status_code, status.HTTP_200_OK)
-        self.assertEqual(first.data, second.data)
+        self.assertEqual(json.loads(first.content), json.loads(second.content))
         self.assertEqual(mock_build_groups.call_count, 1)
         self.assertEqual(mock_qs.count.call_count, 1)
 
