@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from nhit.caching.constants import CACHE_NS_INVENTORY_FILTER_MAP, CACHE_TTL_FILTER
+from nhit.caching.constants import CACHE_NS_INVENTORY_FILTER_MAP, CACHE_TTL_INVENTORY_FILTER
 from nhit.caching.keys import payload_digest
 from nhit.caching.service import get_or_set_cached_value
 
@@ -43,7 +43,7 @@ def get_cached_inventory_filter_map(
     *,
     payload: dict[str, Any],
     builder: Callable[[], dict[str, Any]],
-    timeout: int = CACHE_TTL_FILTER,
+    timeout: int = CACHE_TTL_INVENTORY_FILTER,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Get or build map payload under the inventory_filter_map namespace."""
     cache_payload = inventory_filter_map_cache_payload(payload)

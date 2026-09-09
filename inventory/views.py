@@ -52,7 +52,7 @@ from .services.inventory_filter_perf import (
 )
 from .utils import apply_media_uploads_to_payload, upload_dpr_images
 from nhit.caching import CACHE_NS_INVENTORY_FILTER, CACHE_NS_INVENTORY_MASTER, cached_filter_response, cached_get_response
-from nhit.caching.constants import CACHE_TTL_FILTER
+from nhit.caching.constants import CACHE_TTL_INVENTORY_FILTER
 from nhit.caching.inventory_filter_count import (
     get_cached_inventory_filter_count,
     inventory_filter_filter_hash,
@@ -136,7 +136,7 @@ class InventoryFilterView(APIView):
             namespace=CACHE_NS_INVENTORY_FILTER,
             payload=data,
             builder=build_response,
-            timeout=CACHE_TTL_FILTER,
+            timeout=CACHE_TTL_INVENTORY_FILTER,
             use_lock=True,
         )
         response = Response(page_data, status=status.HTTP_200_OK)

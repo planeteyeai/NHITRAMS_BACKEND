@@ -3,6 +3,10 @@
 # Large read-only filter/report APIs (5 minutes)
 CACHE_TTL_FILTER = 300
 
+# POST /inventory_filter/ only (legacy page + count + map): max lifetime 7 days.
+# Freshness is controlled by namespace version invalidation, not by short TTL.
+CACHE_TTL_INVENTORY_FILTER = 604800
+
 # Stable master/reference APIs (30 minutes)
 CACHE_TTL_MASTER = 1800
 
