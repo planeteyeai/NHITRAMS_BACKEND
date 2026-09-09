@@ -166,7 +166,32 @@ def _list_means_all(values: list[str] | None) -> bool:
     return any(str(value).strip().casefold() == 'all' for value in values)
 
 
+class MapViewportSerializer(serializers.Serializer):
+    """WGS84 bounding box for map requests on POST /inventory_filter/."""
+
+    min_lat = serializers.FloatField(min_value=-90.0, max_value=90.0)
+    max_lat = serializers.FloatField(min_value=-90.0, max_value=90.0)
+    min_lng = serializers.FloatField(min_value=-180.0, max_value=180.0)
+    max_lng = serializers.FloatField(min_value=-180.0, max_value=180.0)
+
+    def validate(self, data):
+        if data['min_lat'] >= data['max_lat']:
+            raise serializers.ValidationError('min_lat must be less than max_lat')
+        # Phase 1: require min_lng < max_lng. Antimeridian split can be added later.
+        if data['min_lng'] >= data['max_lng']:
+            raise serializers.ValidationError(
+                'min_lng must be less than max_lng (antimeridian viewports not supported yet)'
+            )
+        return data
+
+
 class InventoryFilterSerializer(serializers.Serializer):
+    """Shared inventory filter body for table and map consumers.
+
+    Map path is selected only when both ``viewport`` and ``zoom`` are present.
+    There is no ``map_mode`` flag. page/page_size are ignored on the map path.
+    """
+
     chainage_start = serializers.FloatField()
     chainage_end = serializers.FloatField()
     date = serializers.DateField(format='%Y-%m-%d', input_formats=['%Y-%m-%d'])
@@ -186,15 +211,36 @@ class InventoryFilterSerializer(serializers.Serializer):
         min_value=1,
         max_value=MAX_INVENTORY_FILTER_PAGE_SIZE,
     )
+    viewport = MapViewportSerializer(required=False)
+    zoom = serializers.IntegerField(required=False, min_value=0, max_value=22)
 
     def validate(self, data):
         if data['chainage_start'] > data['chainage_end']:
-            raise serializers.ValidationError("chainage_start must be less than or equal to chainage_end")
+            raise serializers.ValidationError(
+                'chainage_start must be less than or equal to chainage_end'
+            )
         if _list_means_all(data.get('direction')):
             data['direction'] = []
         if _list_means_all(data.get('asset_type')):
             data['asset_type'] = []
+
+        has_viewport = 'viewport' in data
+        has_zoom = 'zoom' in data
+        if has_viewport and not has_zoom:
+            raise serializers.ValidationError(
+                {'zoom': 'zoom is required when viewport is provided'}
+            )
+        if has_zoom and not has_viewport:
+            raise serializers.ValidationError(
+                {'viewport': 'viewport is required when zoom is provided'}
+            )
         return data
+
+
+def is_inventory_filter_map_request(data: dict) -> bool:
+    """True when validated body includes both viewport and zoom (map branch)."""
+    return 'viewport' in data and 'zoom' in data
+
 
 class InventoryResponseSerializer(serializers.Serializer):
     project_name = serializers.CharField()

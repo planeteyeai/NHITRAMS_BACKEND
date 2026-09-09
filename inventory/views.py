@@ -16,6 +16,7 @@ from .serializers import (
     DPRReportReadSerializer,
     AutoFetchChainageRequestSerializer,
     resolve_dpr_uploaded_images,
+    is_inventory_filter_map_request,
 )
 from .serializers_inventory_report import (
     InventoryReportWriteSerializer as InventoryRamsWriteSerializer,
@@ -43,6 +44,7 @@ from .services.inventory_filter_response import (
     build_inventory_filter_groups,
 )
 from .services.inventory_summary import build_inventory_summary_aggregates
+from .services.inventory_filter_map import build_inventory_filter_map_payload
 from .services.inventory_filter_perf import (
     log_inventory_filter_performance,
     resolve_request_id,
@@ -55,6 +57,10 @@ from nhit.caching.inventory_filter_count import (
     get_cached_inventory_filter_count,
     inventory_filter_filter_hash,
 )
+from nhit.caching.inventory_filter_map import (
+    get_cached_inventory_filter_map,
+    inventory_filter_map_filter_hash,
+)
 from nhit.caching.inventory_summary import get_cached_inventory_summary
 from nhit.caching.service import get_or_set_cached_value
 from django.db import connection, transaction
@@ -64,8 +70,17 @@ logger = logging.getLogger(__name__)
 
 
 class InventoryFilterView(APIView):
+    """POST /inventory_filter/ — NHIT table path OR map path (viewport+zoom).
+
+    Map detection: both ``viewport`` and ``zoom`` present in the body.
+    No ``map_mode`` flag. page/page_size are ignored on the map branch.
+    """
+
     @swagger_auto_schema(
-        operation_description="Filter inventory data based on criteria",
+        operation_description=(
+            "Filter inventory data. Without viewport/zoom: NHIT nested-array "
+            "pagination. With both viewport and zoom: map markers or clusters."
+        ),
         request_body=InventoryFilterSerializer,
         responses={200: InventoryResponseSerializer(many=True), 400: 'Bad Request'}
     )
@@ -78,6 +93,11 @@ class InventoryFilterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
+
+        # Map branch BEFORE legacy count / page cache / grouping.
+        if is_inventory_filter_map_request(data):
+            return self._post_map(request, data, request_started, request_id)
+
         page = data['page']
         page_size = data['page_size']
         offset = (page - 1) * page_size
@@ -142,6 +162,7 @@ class InventoryFilterView(APIView):
             log_inventory_filter_performance({
                 'request_id': request_id,
                 'endpoint': '/inventory_filter/',
+                'map_request': False,
                 'page': page,
                 'page_size': page_size,
                 'filter_hash': filter_hash,
@@ -158,6 +179,70 @@ class InventoryFilterView(APIView):
                 'total_ms': total_ms,
                 'query_count': query_count,
                 'response_bytes': response_bytes,
+            })
+
+        return response
+
+    def _post_map(self, request, data, request_started, request_id):
+        """Map-optimized branch: viewport + zoom; ignores page/page_size."""
+        filter_hash = inventory_filter_map_filter_hash(data)
+        viewport = data['viewport']
+        zoom = data['zoom']
+        build_timings: dict = {}
+
+        def build_response():
+            return build_inventory_filter_map_payload(data, timings=build_timings)
+
+        payload, cache_meta = get_cached_inventory_filter_map(
+            payload=data,
+            builder=build_response,
+        )
+        response = Response(payload, status=status.HTTP_200_OK)
+
+        total_ms = round((time.perf_counter() - request_started) * 1000, 2)
+        cache_hit = bool(cache_meta.get('cache_hit'))
+        mode = payload.get('mode')
+        if cache_hit:
+            query_count = 0
+        elif mode == 'clusters':
+            query_count = 2
+        else:
+            query_count = 1
+
+        if should_log_inventory_filter_perf(total_ms):
+            render_started = time.perf_counter()
+            response_bytes = len(JSONRenderer().render(payload))
+            render_ms = round((time.perf_counter() - render_started) * 1000, 2)
+            lat_span = float(viewport['max_lat']) - float(viewport['min_lat'])
+            lng_span = float(viewport['max_lng']) - float(viewport['min_lng'])
+            log_inventory_filter_performance({
+                'request_id': request_id,
+                'endpoint': '/inventory_filter/',
+                'map_request': True,
+                'zoom': zoom,
+                'viewport_lat_span': round(lat_span, 6),
+                'viewport_lng_span': round(lng_span, 6),
+                'filter_hash': filter_hash,
+                'cache_hit': cache_hit,
+                'query_count': query_count,
+                'probe_db_ms': build_timings.get('probe_db_ms'),
+                'cluster_db_ms': build_timings.get('cluster_db_ms'),
+                'db_ms': build_timings.get('cluster_db_ms') or build_timings.get('probe_db_ms'),
+                'serialization_ms': render_ms,
+                'build_ms': cache_meta.get('build_ms') or build_timings.get('build_ms'),
+                'total_ms': total_ms,
+                'response_bytes': response_bytes,
+                'mode': mode,
+                'marker_count': (
+                    payload.get('meta', {}).get('marker_count')
+                    if isinstance(payload.get('meta'), dict)
+                    else len(payload.get('markers') or [])
+                ),
+                'cluster_count': (
+                    payload.get('meta', {}).get('cluster_count')
+                    if isinstance(payload.get('meta'), dict)
+                    else len(payload.get('clusters') or [])
+                ),
             })
 
         return response

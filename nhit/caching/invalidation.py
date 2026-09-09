@@ -6,6 +6,7 @@ from nhit.caching.constants import (
     CACHE_NS_AIS_FILTER,
     CACHE_NS_DISTRESS_REPORT_FILTER,
     CACHE_NS_INVENTORY_FILTER,
+    CACHE_NS_INVENTORY_FILTER_MAP,
     CACHE_NS_INVENTORY_SUMMARY,
     CACHE_NS_INVENTORY_MASTER,
     CACHE_NS_LABOUR_MASTERS,
@@ -18,7 +19,14 @@ from nhit.caching.service import bump_namespace_version
 
 
 def invalidate_inventory_filter_cache() -> int:
-    return bump_namespace_version(CACHE_NS_INVENTORY_FILTER)
+    """Bump legacy inventory_filter cache; also bump map cache (same source data)."""
+    version = bump_namespace_version(CACHE_NS_INVENTORY_FILTER)
+    bump_namespace_version(CACHE_NS_INVENTORY_FILTER_MAP)
+    return version
+
+
+def invalidate_inventory_filter_map_cache() -> int:
+    return bump_namespace_version(CACHE_NS_INVENTORY_FILTER_MAP)
 
 
 def invalidate_inventory_summary_cache() -> int:
