@@ -123,6 +123,7 @@ def get_cached_inventory_filter_page(
         'cache_repr': INVENTORY_FILTER_PAGE_SCOPE,
         'serve_mode': serve_mode,
         'response_path': 'python_object',
+        'redis_round_trips': 0,
     }
 
     if not is_cache_usable():
@@ -131,7 +132,10 @@ def get_cached_inventory_filter_page(
         meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
         return _adapt_miss_value(value, serve_mode, meta, store=False, timeout=timeout)
 
+    t_ver0 = time.perf_counter()
     version = get_namespace_version(CACHE_NS_INVENTORY_FILTER)
+    meta['version_get_ms'] = round((time.perf_counter() - t_ver0) * 1000, 2)
+    meta['redis_round_trips'] = 1
     cache_key = build_cache_key(
         namespace=CACHE_NS_INVENTORY_FILTER,
         version=version,
@@ -163,9 +167,12 @@ def get_cached_inventory_filter_page(
             )
             return None
 
+    get_timings: dict[str, Any] = {}
     t_redis0 = time.perf_counter()
-    hit, cached_raw = safe_cache_get(cache_key)
+    hit, cached_raw = safe_cache_get(cache_key, timings=get_timings)
     meta['redis_get_ms'] = round((time.perf_counter() - t_redis0) * 1000, 2)
+    meta['page_data_get_ms'] = get_timings.get('cache_get_ms')
+    meta['redis_round_trips'] = int(meta.get('redis_round_trips') or 0) + 1
     if hit:
         adapted = _try_hit(cached_raw)
         if adapted is not None:

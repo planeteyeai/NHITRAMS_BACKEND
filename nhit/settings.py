@@ -37,6 +37,10 @@ ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default='localhost,127.0.0.1')
 # Temporary traffic_filter production timing (measurement only). Default OFF.
 TRAFFIC_FILTER_PERF_DEBUG = _env_bool('TRAFFIC_FILTER_PERF_DEBUG', default=False)
 
+# Temporary inventory_filter production timing (measurement only). Default OFF.
+# When true: always emit structured inventory_filter_performance logs with Redis stage detail.
+INVENTORY_FILTER_PERF_DEBUG = _env_bool('INVENTORY_FILTER_PERF_DEBUG', default=False)
+
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -261,6 +265,31 @@ CORS_EXPOSE_HEADERS = [
     'X-Inventory-Row-Count',
     'X-Inventory-Has-More',
     'Content-Disposition',
+    # Present only when INVENTORY_FILTER_PERF_DEBUG=true (measurement headers).
+    'X-Inv-Perf-Request-Id',
+    'X-Inv-Perf-Cache-Hit',
+    'X-Inv-Perf-Count-Hit',
+    'X-Inv-Perf-Response-Path',
+    'X-Inv-Perf-Server-Total-Ms',
+    'X-Inv-Perf-Count-Version-Get-Ms',
+    'X-Inv-Perf-Count-Data-Get-Ms',
+    'X-Inv-Perf-Page-Version-Get-Ms',
+    'X-Inv-Perf-Page-Data-Get-Ms',
+    'X-Inv-Perf-Redis-Round-Trips',
+    'X-Inv-Perf-Cache-Decode-Ms',
+    'X-Inv-Perf-Ifgz-Extract-Ms',
+    'X-Inv-Perf-Json-Parse-Ms',
+    'X-Inv-Perf-Json-Render-Ms',
+    'X-Inv-Perf-Gzip-Ms',
+    'X-Inv-Perf-Content-Length',
+    'X-Inv-Perf-Redis-Host-Class',
+    'X-Inv-Perf-Using-Internal-Redis',
+    'X-Inv-Perf-Redis-Scheme',
+    'X-Inv-Perf-Redis-Port',
+    'X-Inv-Perf-Worker-Pid',
+    'X-Inv-Perf-Pool-Created',
+    'X-Inv-Perf-Pool-Available',
+    'X-Inv-Perf-Redis-Payload-Bytes',
 ]
 
 CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS')

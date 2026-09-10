@@ -46,7 +46,10 @@ from .services.inventory_filter_response import (
 from .services.inventory_summary import build_inventory_summary_aggregates
 from .services.inventory_filter_map import build_inventory_filter_map_payload
 from .services.inventory_filter_perf import (
+    apply_inventory_filter_perf_debug_headers,
+    is_inventory_filter_perf_debug_enabled,
     log_inventory_filter_performance,
+    redis_runtime_safe_meta,
     resolve_request_id,
     should_log_inventory_filter_perf,
 )
@@ -197,7 +200,9 @@ class InventoryFilterView(APIView):
                 response_bytes = len(JSONRenderer().render(page_body))
                 render_ms = round((time.perf_counter() - render_started) * 1000, 2)
                 http_gzip = 'middleware'
-            log_inventory_filter_performance({
+            count_rtts = int(count_meta.get('redis_round_trips') or 0)
+            page_rtts = int(page_meta.get('redis_round_trips') or 0)
+            log_fields = {
                 'request_id': request_id,
                 'endpoint': '/inventory_filter/',
                 'map_request': False,
@@ -218,12 +223,33 @@ class InventoryFilterView(APIView):
                 'build_ms': page_meta.get('build_ms'),
                 'redis_get_ms': page_meta.get('redis_get_ms'),
                 'cache_decode_ms': page_meta.get('decode_ms') or page_meta.get('extract_ms'),
+                'ifgz_extract_ms': page_meta.get('extract_ms'),
                 'render_ms': render_ms,
+                'json_parse_ms': 0 if response_path == 'direct_gzip_bytes' else page_meta.get('gunzip_json_loads_ms'),
+                'json_render_ms': render_ms,
+                'gzip_ms': 0 if http_gzip == 'passthrough' else None,
                 'http_gzip': http_gzip,
                 'total_ms': total_ms,
+                'server_total_ms': total_ms,
                 'query_count': query_count,
                 'response_bytes': response_bytes,
-            })
+                'content_length': response.get('Content-Length'),
+            }
+            if is_inventory_filter_perf_debug_enabled():
+                log_fields.update({
+                    'count_version_get_ms': count_meta.get('version_get_ms'),
+                    'count_data_get_ms': count_meta.get('data_get_ms'),
+                    'count_redis_round_trips': count_rtts,
+                    'page_version_get_ms': page_meta.get('version_get_ms'),
+                    'page_data_get_ms': page_meta.get('page_data_get_ms') or page_meta.get('redis_get_ms'),
+                    'page_redis_round_trips': page_rtts,
+                    'redis_round_trips': count_rtts + page_rtts,
+                    'redis_payload_bytes': page_meta.get('redis_payload_bytes'),
+                    'hit_adapt_ms': page_meta.get('hit_adapt_ms'),
+                    **redis_runtime_safe_meta(),
+                })
+                apply_inventory_filter_perf_debug_headers(response, log_fields)
+            log_inventory_filter_performance(log_fields)
 
         return response
 

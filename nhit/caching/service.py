@@ -252,6 +252,7 @@ def get_or_set_cached_value(
         'cache_hit': False,
         'cache_enabled': is_cache_usable(),
         'cache_backend': cache_backend_name().rsplit('.', 1)[-1],
+        'redis_round_trips': 0,
     }
 
     if not is_cache_usable():
@@ -260,12 +261,23 @@ def get_or_set_cached_value(
         meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
         return value, meta
 
+    t_ver0 = time.perf_counter()
     version = get_namespace_version(namespace)
+    meta['version_get_ms'] = round((time.perf_counter() - t_ver0) * 1000, 2)
+    meta['redis_round_trips'] = 1
     cache_key = build_cache_key(namespace=namespace, version=version, payload=payload, scope=scope)
     digest = cache_key.rsplit(':', 1)[-1]
     meta['cache_key_suffix'] = digest[:12]
 
-    hit, cached_value = safe_cache_get(cache_key, timings=timings)
+    hit_timings: dict[str, Any] = {}
+    hit, cached_value = safe_cache_get(cache_key, timings=hit_timings)
+    meta['redis_round_trips'] = int(meta.get('redis_round_trips') or 0) + 1
+    meta['data_get_ms'] = hit_timings.get('cache_get_ms')
+    if timings is not None and hit_timings.get('cache_get_ms') is not None:
+        timings['cache_get_ms'] = round(
+            float(timings.get('cache_get_ms') or 0) + float(hit_timings['cache_get_ms']),
+            2,
+        )
     if hit:
         meta['cache_hit'] = True
         return cached_value, meta
@@ -279,6 +291,7 @@ def get_or_set_cached_value(
                 return cached_value, meta
         try:
             hit, cached_value = safe_cache_get(cache_key, timings=timings)
+            meta['redis_round_trips'] = int(meta.get('redis_round_trips') or 0) + 1
             if hit:
                 meta['cache_hit'] = True
                 return cached_value, meta
@@ -286,6 +299,7 @@ def get_or_set_cached_value(
             value = builder()
             meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
             safe_cache_set(cache_key, value, timeout=timeout, timings=timings)
+            meta['redis_round_trips'] = int(meta.get('redis_round_trips') or 0) + 1
             return value, meta
         finally:
             if acquired:
@@ -295,4 +309,5 @@ def get_or_set_cached_value(
     value = builder()
     meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
     safe_cache_set(cache_key, value, timeout=timeout, timings=timings)
+    meta['redis_round_trips'] = int(meta.get('redis_round_trips') or 0) + 1
     return value, meta
