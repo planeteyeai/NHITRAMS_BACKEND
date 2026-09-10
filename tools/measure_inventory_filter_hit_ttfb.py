@@ -96,8 +96,13 @@ def _stats(values: list[float | None]) -> dict[str, Any]:
     }
 
 
+def _header_map(resp_headers: Any) -> dict[str, str]:
+    """Normalize response headers to lowercase keys (urllib3 may lower-case)."""
+    return {str(k).lower(): str(v) for k, v in resp_headers.items()}
+
+
 def _f(headers: dict[str, str], name: str) -> float | None:
-    raw = headers.get(name)
+    raw = headers.get(name.lower())
     if raw is None or raw == '':
         return None
     try:
@@ -107,13 +112,18 @@ def _f(headers: dict[str, str], name: str) -> float | None:
 
 
 def _i(headers: dict[str, str], name: str) -> int | None:
-    raw = headers.get(name)
+    raw = headers.get(name.lower())
     if raw is None or raw == '':
         return None
     try:
         return int(float(raw))
     except ValueError:
         return None
+
+
+def _s(headers: dict[str, str], name: str) -> str | None:
+    raw = headers.get(name.lower())
+    return raw if raw not in (None, '') else None
 
 
 def _measure(session: Any, url: str, payload: dict[str, Any], *, label: str) -> dict[str, Any]:
@@ -145,9 +155,9 @@ def _measure(session: Any, url: str, payload: dict[str, Any], *, label: str) -> 
     t_done = time.perf_counter()
     resp.close()
 
-    h = {k: v for k, v in resp.headers.items()}
-    encoding = (h.get('Content-Encoding') or '').lower() or None
-    content_length = h.get('Content-Length')
+    h = _header_map(resp.headers)
+    encoding = (_s(h, 'Content-Encoding') or '').lower() or None
+    content_length = _s(h, 'Content-Length')
     gzip_bytes = len(wire) if encoding == 'gzip' or wire[:2] == b'\x1f\x8b' else None
     if gzip_bytes is None and content_length and content_length.isdigit():
         gzip_bytes = int(content_length)
@@ -169,11 +179,11 @@ def _measure(session: Any, url: str, payload: dict[str, Any], *, label: str) -> 
 
     return {
         'label': label,
-        'request_id': h.get('X-Inv-Perf-Request-Id') or request_id,
+        'request_id': _s(h, 'X-Inv-Perf-Request-Id') or request_id,
         'status': resp.status_code,
-        'cache_hit': h.get('X-Inv-Perf-Cache-Hit'),
-        'count_cache_hit': h.get('X-Inv-Perf-Count-Hit'),
-        'response_path': h.get('X-Inv-Perf-Response-Path'),
+        'cache_hit': _s(h, 'X-Inv-Perf-Cache-Hit'),
+        'count_cache_hit': _s(h, 'X-Inv-Perf-Count-Hit'),
+        'response_path': _s(h, 'X-Inv-Perf-Response-Path'),
         'server_total_ms': server_total,
         'ttfb_ms': ttfb,
         'body_transfer_ms': round((t_done - (first_byte or t_headers)) * 1000, 2),
@@ -190,21 +200,21 @@ def _measure(session: Any, url: str, payload: dict[str, Any], *, label: str) -> 
         'json_render_ms': _f(h, 'X-Inv-Perf-Json-Render-Ms'),
         'gzip_ms': _f(h, 'X-Inv-Perf-Gzip-Ms'),
         'python_processing_ms': python_processing,
-        'content_length_header': content_length or h.get('X-Inv-Perf-Content-Length'),
+        'content_length_header': content_length or _s(h, 'X-Inv-Perf-Content-Length'),
         'wire_bytes': len(wire),
         'gzip_bytes': gzip_bytes,
         'content_encoding': encoding,
-        'redis_host_class': h.get('X-Inv-Perf-Redis-Host-Class'),
-        'using_internal_redis': h.get('X-Inv-Perf-Using-Internal-Redis'),
-        'redis_scheme': h.get('X-Inv-Perf-Redis-Scheme'),
-        'redis_port': h.get('X-Inv-Perf-Redis-Port'),
-        'worker_pid': h.get('X-Inv-Perf-Worker-Pid'),
-        'pool_created': h.get('X-Inv-Perf-Pool-Created'),
-        'pool_available': h.get('X-Inv-Perf-Pool-Available'),
+        'redis_host_class': _s(h, 'X-Inv-Perf-Redis-Host-Class'),
+        'using_internal_redis': _s(h, 'X-Inv-Perf-Using-Internal-Redis'),
+        'redis_scheme': _s(h, 'X-Inv-Perf-Redis-Scheme'),
+        'redis_port': _s(h, 'X-Inv-Perf-Redis-Port'),
+        'worker_pid': _s(h, 'X-Inv-Perf-Worker-Pid'),
+        'pool_created': _s(h, 'X-Inv-Perf-Pool-Created'),
+        'pool_available': _s(h, 'X-Inv-Perf-Pool-Available'),
         'redis_payload_bytes': _i(h, 'X-Inv-Perf-Redis-Payload-Bytes'),
-        'row_count_header': h.get('X-Inventory-Row-Count'),
-        'page_size_header': h.get('X-Inventory-Page-Size'),
-        'debug_headers_present': 'X-Inv-Perf-Server-Total-Ms' in h,
+        'row_count_header': _s(h, 'X-Inventory-Row-Count'),
+        'page_size_header': _s(h, 'X-Inventory-Page-Size'),
+        'debug_headers_present': 'x-inv-perf-server-total-ms' in h,
         'final_url_path': urlparse(resp.url).path,
     }
 
