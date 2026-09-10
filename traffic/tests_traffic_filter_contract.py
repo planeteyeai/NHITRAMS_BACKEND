@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
+import json
 from datetime import date
 
 from django.db import connection
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -61,6 +63,24 @@ def _create_unmanaged_tables():
                 pass
 
 
+def _json_body(response):
+    """Parse JSON from DRF Response or direct-byte HttpResponse."""
+    raw = bytes(response.content)
+    if (response.get('Content-Encoding') or '').lower() == 'gzip':
+        raw = gzip.decompress(raw)
+    return json.loads(raw)
+
+
+@override_settings(
+    NHIT_CACHE_ENABLED=True,
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'traffic-filter-contract-tests',
+            'KEY_PREFIX': 'traffic-contract',
+        }
+    },
+)
 class TrafficFilterContractTests(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -124,18 +144,19 @@ class TrafficFilterContractTests(TestCase):
     def test_direction_all_is_case_insensitive(self):
         response = self.client.post(ENDPOINT, PAYLOAD, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(len(response.data[0]), 2)
+        data = _json_body(response)
+        self.assertEqual(len(data), 1)
+        self.assertEqual(len(data[0]), 2)
 
     def test_nested_group_ordering(self):
         response = self.client.post(ENDPOINT, PAYLOAD, format='json')
-        group = response.data[0]
+        group = _json_body(response)[0]
         self.assertEqual(group[0]['direction'], 'Increasing')
         self.assertEqual(group[1]['direction'], 'Decreasing')
 
     def test_nhit_field_names_and_metadata(self):
         response = self.client.post(ENDPOINT, PAYLOAD, format='json')
-        record = response.data[0][0]
+        record = _json_body(response)[0][0]
         self.assertTrue(NHIT_FIELDS.issubset(record.keys()))
         self.assertEqual(record['road_code'], '47')
         self.assertEqual(record['district'], 'Swaroopganj')

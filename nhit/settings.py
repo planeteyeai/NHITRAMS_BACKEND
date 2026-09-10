@@ -34,6 +34,9 @@ if not SECRET_KEY:
 DEBUG = _env_bool('DJANGO_DEBUG', default=False)
 ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default='localhost,127.0.0.1')
 
+# Temporary traffic_filter production timing (measurement only). Default OFF.
+TRAFFIC_FILTER_PERF_DEBUG = _env_bool('TRAFFIC_FILTER_PERF_DEBUG', default=False)
+
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -364,6 +367,11 @@ LOGGING = {
         'nhit.inventory_filter.perf': {
             'handlers': ['console'],
             'level': os.environ.get('NHIT_INVENTORY_FILTER_PERF_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+        'nhit.traffic_filter.perf': {
+            'handlers': ['console'],
+            'level': os.environ.get('NHIT_TRAFFIC_FILTER_PERF_LOG_LEVEL', 'INFO'),
             'propagate': False,
         },
     },

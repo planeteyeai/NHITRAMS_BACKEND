@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from datetime import date
 
 TRAFFIC_FILTER_VALUE_FIELDS = (
@@ -145,13 +146,59 @@ def group_traffic_rows(rows: list[dict]) -> list[list[dict]]:
     return groups
 
 
-def build_traffic_filter_groups(queryset) -> list[list[dict]]:
-    """Return NHIT-style nested traffic arrays."""
-    records = list(
-        queryset.values(*TRAFFIC_FILTER_VALUE_FIELDS).order_by(
-            'segment__chainage_start',
-            'segment__chainage_end',
+def build_traffic_filter_groups(queryset, timings: dict | None = None) -> list[list[dict]]:
+    """Return NHIT-style nested traffic arrays.
+
+    When *timings* is provided (perf debug only), record DB / serialize / group
+    durations. Default callers pass nothing — zero timing overhead.
+    """
+    if timings is None:
+        records = list(
+            queryset.values(*TRAFFIC_FILTER_VALUE_FIELDS).order_by(
+                'segment__chainage_start',
+                'segment__chainage_end',
+            )
         )
-    )
+        rows = [serialize_traffic_row(record) for record in records]
+        return group_traffic_rows(rows)
+
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    t_db0 = time.perf_counter()
+    with CaptureQueriesContext(connection) as ctx:
+        records = list(
+            queryset.values(*TRAFFIC_FILTER_VALUE_FIELDS).order_by(
+                'segment__chainage_start',
+                'segment__chainage_end',
+            )
+        )
+    timings['db_ms'] = round((time.perf_counter() - t_db0) * 1000, 2)
+    timings['db_query_count'] = len(ctx.captured_queries)
+    if ctx.captured_queries:
+        # Query 'time' is seconds as a string; do not log SQL or params.
+        slowest = 0.0
+        total_sql = 0.0
+        for query in ctx.captured_queries:
+            try:
+                qtime = float(query.get('time') or 0)
+            except (TypeError, ValueError):
+                qtime = 0.0
+            total_sql += qtime
+            if qtime > slowest:
+                slowest = qtime
+        timings['db_sql_ms'] = round(total_sql * 1000, 2)
+        timings['db_slowest_ms'] = round(slowest * 1000, 2)
+
+    t_ser0 = time.perf_counter()
     rows = [serialize_traffic_row(record) for record in records]
-    return group_traffic_rows(rows)
+    timings['serialize_ms'] = round((time.perf_counter() - t_ser0) * 1000, 2)
+
+    t_grp0 = time.perf_counter()
+    groups = group_traffic_rows(rows)
+    timings['group_ms'] = round((time.perf_counter() - t_grp0) * 1000, 2)
+    timings['python_ms'] = round(
+        float(timings.get('serialize_ms') or 0) + float(timings.get('group_ms') or 0),
+        2,
+    )
+    return groups

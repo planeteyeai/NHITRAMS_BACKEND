@@ -1,14 +1,27 @@
+from __future__ import annotations
+
+import time
+
 from django.db.models import Q
+from django.http import HttpResponse
+from django.utils.cache import patch_vary_headers
 
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from nhit.caching import CACHE_NS_TRAFFIC_FILTER, cached_filter_response
+from nhit.caching.accept_encoding import accepts_gzip_encoding
+from nhit.caching.constants import CACHE_NS_TRAFFIC_FILTER, CACHE_TTL_FILTER
+from nhit.caching.traffic_filter_cache import get_cached_traffic_filter_response
 
 from .models import Traffic
 from .serializers import TrafficFilterRequestSerializer
+from .services.traffic_filter_perf import (
+    REQUEST_PERF_ATTR,
+    is_traffic_filter_perf_debug_enabled,
+    resolve_request_id,
+)
 from .services.traffic_filter_response import build_traffic_filter_groups
 
 
@@ -20,6 +33,12 @@ class TrafficFilterView(APIView):
         tags=['Traffic'],
     )
     def post(self, request):
+        # Cheap flag check only when instrumentation is disabled.
+        perf_debug = is_traffic_filter_perf_debug_enabled()
+        t0 = time.perf_counter() if perf_debug else None
+        request_id = resolve_request_id(request) if perf_debug else None
+        stage_timings: dict = {} if perf_debug else {}
+
         serializer = TrafficFilterRequestSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -51,10 +70,73 @@ class TrafficFilterView(APIView):
             ):
                 queryset = queryset.filter(segment__direction__in=data['direction'])
 
+            if perf_debug:
+                return build_traffic_filter_groups(queryset, timings=stage_timings)
             return build_traffic_filter_groups(queryset)
 
-        return cached_filter_response(
-            namespace=CACHE_NS_TRAFFIC_FILTER,
+        accept_gzip = accepts_gzip_encoding(request.META.get('HTTP_ACCEPT_ENCODING'))
+        serve_mode = 'gzip_bytes' if accept_gzip else 'json_bytes'
+
+        body, meta = get_cached_traffic_filter_response(
             payload=data,
             builder=build_response,
+            timeout=CACHE_TTL_FILTER,
+            serve_mode=serve_mode,
         )
+
+        response_path = meta.get('response_path') or 'python_object'
+        if response_path == 'direct_gzip_bytes':
+            response = HttpResponse(
+                body,
+                content_type='application/json',
+                status=status.HTTP_200_OK,
+            )
+            response['Content-Encoding'] = 'gzip'
+            response['Content-Length'] = str(len(body))
+            patch_vary_headers(response, ('Accept-Encoding',))
+        elif response_path == 'direct_json_bytes':
+            response = HttpResponse(
+                body,
+                content_type='application/json',
+                status=status.HTTP_200_OK,
+            )
+            response['Content-Length'] = str(len(body))
+            patch_vary_headers(response, ('Accept-Encoding',))
+        else:
+            # Compat path: nested Python via DRF (should be rare for this endpoint).
+            response = Response(body, status=status.HTTP_200_OK)
+
+        if perf_debug:
+            cache_hit = bool(meta.get('cache_hit'))
+            stage_timings['cache_get_ms'] = meta.get('redis_get_ms')
+            stage_timings['cache_lookup_ms'] = meta.get('redis_get_ms')
+            stage_timings['cache_decode_ms'] = meta.get('decode_ms') or meta.get('extract_ms') or 0
+            if meta.get('encode_ms') is not None:
+                stage_timings['cache_write_ms'] = meta.get('encode_ms')
+            if cache_hit and 'python_ms' not in stage_timings:
+                stage_timings['python_ms'] = 0
+            stage_timings['json_ms'] = meta.get('render_ms') or 0
+            if response_path == 'direct_gzip_bytes':
+                stage_timings['json_ms'] = 0
+
+            response_bytes = meta.get('http_body_bytes')
+            if response_bytes is None and isinstance(body, (bytes, bytearray)):
+                response_bytes = len(body)
+
+            perf_payload = {
+                'request_id': request_id,
+                't0': t0,
+                'cache': 'HIT' if cache_hit else 'MISS',
+                'rows': None,
+                'groups': None,
+                'response_bytes': response_bytes,
+                'stage_timings': stage_timings,
+                'logged': False,
+                'response_path': response_path,
+                'namespace': CACHE_NS_TRAFFIC_FILTER,
+            }
+            django_request = getattr(request, '_request', request)
+            setattr(django_request, REQUEST_PERF_ATTR, perf_payload)
+            setattr(request, REQUEST_PERF_ATTR, perf_payload)
+
+        return response

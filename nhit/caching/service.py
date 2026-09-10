@@ -73,13 +73,23 @@ def bump_namespace_version(namespace: str) -> int:
         return get_namespace_version(namespace)
 
 
-def safe_cache_get(key: str) -> tuple[bool, Any | None]:
+def safe_cache_get(
+    key: str,
+    *,
+    timings: dict[str, Any] | None = None,
+) -> tuple[bool, Any | None]:
     if not is_cache_usable():
         return False, None
     try:
         start = time.perf_counter()
         value = cache.get(key)
         elapsed_ms = (time.perf_counter() - start) * 1000
+        if timings is not None:
+            # django-redis unpickles inside cache.get(); decode is not separable.
+            timings['cache_get_ms'] = round(
+                float(timings.get('cache_get_ms') or 0) + elapsed_ms,
+                2,
+            )
         if value is None:
             logger.debug('cache MISS key_suffix=%s lookup_ms=%.2f', key[-12:], elapsed_ms)
             return False, None
@@ -90,11 +100,35 @@ def safe_cache_get(key: str) -> tuple[bool, Any | None]:
         return False, None
 
 
-def safe_cache_set(key: str, value: Any, *, timeout: int) -> bool:
+def safe_cache_get_many(keys: list[str]) -> dict[str, Any]:
+    """Fetch multiple keys; backends that support it use one Redis round trip."""
+    if not is_cache_usable() or not keys:
+        return {}
+    try:
+        return cache.get_many(keys) or {}
+    except Exception:
+        logger.warning('cache get_many failed count=%s', len(keys), exc_info=True)
+        return {}
+
+
+def safe_cache_set(
+    key: str,
+    value: Any,
+    *,
+    timeout: int,
+    timings: dict[str, Any] | None = None,
+) -> bool:
     if not is_cache_usable():
         return False
     try:
+        start = time.perf_counter()
         result = cache.set(key, value, timeout=timeout)
+        if timings is not None:
+            timings['cache_write_ms'] = round(
+                float(timings.get('cache_write_ms') or 0)
+                + (time.perf_counter() - start) * 1000,
+                2,
+            )
         # django-redis + IGNORE_EXCEPTIONS returns None on connection failure.
         # Other backends may return None/True; only treat Redis None as failure.
         if result is None and is_redis_configured():
@@ -127,11 +161,15 @@ def _release_population_lock(namespace: str, digest: str) -> None:
         logger.warning('cache lock release failed namespace=%s', namespace, exc_info=True)
 
 
-def _wait_for_cached_value(cache_key: str) -> tuple[bool, Any | None]:
+def _wait_for_cached_value(
+    cache_key: str,
+    *,
+    timings: dict[str, Any] | None = None,
+) -> tuple[bool, Any | None]:
     """Poll with bounded backoff until the lock holder populates the key or wait expires."""
     for delay in CACHE_LOCK_WAIT_SCHEDULE_SECONDS:
         time.sleep(delay)
-        hit, cached_value = safe_cache_get(cache_key)
+        hit, cached_value = safe_cache_get(cache_key, timings=timings)
         if hit:
             return True, cached_value
     return False, None
@@ -145,8 +183,13 @@ def get_or_set_cached_value(
     timeout: int,
     scope: str = '',
     use_lock: bool = False,
+    timings: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Return cached value or build, cache, and return a fresh value."""
+    """Return cached value or build, cache, and return a fresh value.
+
+    When *timings* is provided, cache GET/SET durations are accumulated into it.
+    Default callers pass nothing — overhead is a single None check per operation.
+    """
     meta: dict[str, Any] = {
         'cache_hit': False,
         'cache_enabled': is_cache_usable(),
@@ -164,7 +207,7 @@ def get_or_set_cached_value(
     digest = cache_key.rsplit(':', 1)[-1]
     meta['cache_key_suffix'] = digest[:12]
 
-    hit, cached_value = safe_cache_get(cache_key)
+    hit, cached_value = safe_cache_get(cache_key, timings=timings)
     if hit:
         meta['cache_hit'] = True
         return cached_value, meta
@@ -172,19 +215,19 @@ def get_or_set_cached_value(
     if use_lock:
         acquired = _acquire_population_lock(namespace, digest)
         if not acquired:
-            hit, cached_value = _wait_for_cached_value(cache_key)
+            hit, cached_value = _wait_for_cached_value(cache_key, timings=timings)
             if hit:
                 meta['cache_hit'] = True
                 return cached_value, meta
         try:
-            hit, cached_value = safe_cache_get(cache_key)
+            hit, cached_value = safe_cache_get(cache_key, timings=timings)
             if hit:
                 meta['cache_hit'] = True
                 return cached_value, meta
             start = time.perf_counter()
             value = builder()
             meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
-            safe_cache_set(cache_key, value, timeout=timeout)
+            safe_cache_set(cache_key, value, timeout=timeout, timings=timings)
             return value, meta
         finally:
             if acquired:
@@ -193,5 +236,5 @@ def get_or_set_cached_value(
     start = time.perf_counter()
     value = builder()
     meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
-    safe_cache_set(cache_key, value, timeout=timeout)
+    safe_cache_set(cache_key, value, timeout=timeout, timings=timings)
     return value, meta
