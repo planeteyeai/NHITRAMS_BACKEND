@@ -169,20 +169,37 @@ def _fetch_entry(
     return current_ns_v, blob, elapsed_ms
 
 
-def _wait_for_entry(*, version_key: str, data_key: str) -> tuple[int, bytes | None, float]:
-    """Poll with bounded backoff until lock holder populates a valid entry."""
-    total_ms = 0.0
+def _wait_for_entry(*, version_key: str, data_key: str) -> tuple[int, bytes | None, float, dict[str, Any]]:
+    """Poll with bounded backoff until lock holder populates a valid entry.
+
+    Returns (current_ns_v, tfgz1_blob_or_None, fetch_elapsed_ms, wait_diag).
+    ``wait_diag`` includes actual sleep time (separate from Redis fetch time).
+    """
+    total_fetch_ms = 0.0
+    total_sleep_ms = 0.0
+    poll_count = 0
     current_ns_v = 1
     for delay in _LOCK_WAIT_SCHEDULE_SECONDS:
+        t_sleep0 = time.perf_counter()
         time.sleep(delay)
+        total_sleep_ms += (time.perf_counter() - t_sleep0) * 1000
+        poll_count += 1
         current_ns_v, blob, elapsed_ms = _fetch_entry(
             version_key=version_key,
             data_key=data_key,
         )
-        total_ms += elapsed_ms
+        total_fetch_ms += elapsed_ms
         if blob is not None:
-            return current_ns_v, blob, total_ms
-    return current_ns_v, None, total_ms
+            return current_ns_v, blob, total_fetch_ms, {
+                'wait_sleep_ms': round(total_sleep_ms, 2),
+                'wait_poll_count': poll_count,
+                'wait_found_entry': True,
+            }
+    return current_ns_v, None, total_fetch_ms, {
+        'wait_sleep_ms': round(total_sleep_ms, 2),
+        'wait_poll_count': poll_count,
+        'wait_found_entry': False,
+    }
 
 
 def get_cached_traffic_filter_response(
@@ -278,21 +295,27 @@ def get_cached_traffic_filter_response(
             ns_v=ns_v,
         )
 
-    acquired = _acquire_population_lock(CACHE_NS_TRAFFIC_FILTER, digest)
+    lock_diag: dict[str, Any] = {}
+    acquired = _acquire_population_lock(CACHE_NS_TRAFFIC_FILTER, digest, diag=lock_diag)
+    meta.update(lock_diag)
     if not acquired:
-        current_ns_v, cached_blob, wait_ms = _wait_for_entry(
+        current_ns_v, cached_blob, wait_ms, wait_diag = _wait_for_entry(
             version_key=version_key,
             data_key=data_key,
         )
+        meta.update(wait_diag)
         meta['redis_get_ms'] = round(float(meta.get('redis_get_ms') or 0) + wait_ms, 2)
-        meta['redis_round_trips'] = int(meta.get('redis_round_trips') or 1) + len(
-            _LOCK_WAIT_SCHEDULE_SECONDS
+        meta['redis_round_trips'] = int(meta.get('redis_round_trips') or 1) + int(
+            wait_diag.get('wait_poll_count') or len(_LOCK_WAIT_SCHEDULE_SECONDS)
         )
         meta['namespace_version'] = current_ns_v
         if cached_blob is not None:
             adapted = _try_hit(cached_blob)
             if adapted is not None:
                 return adapted
+    else:
+        meta.setdefault('wait_sleep_ms', 0)
+        meta.setdefault('wait_poll_count', 0)
     try:
         current_ns_v, cached_blob, fetch_ms = _fetch_entry(
             version_key=version_key,
@@ -308,7 +331,7 @@ def get_cached_traffic_filter_response(
         return _build_and_store(current_ns_v)
     finally:
         if acquired:
-            _release_population_lock(CACHE_NS_TRAFFIC_FILTER, digest)
+            _release_population_lock(CACHE_NS_TRAFFIC_FILTER, digest, diag=meta)
 
 
 def _adapt_miss_value(
@@ -329,9 +352,17 @@ def _adapt_miss_value(
             encoded = encode_traffic_filter_cache(value)
             entry = wrap_traffic_filter_entry(ns_v=ns_v, blob=encoded)
             meta['encode_ms'] = round((time.perf_counter() - t_enc) * 1000, 2)
-            meta['redis_payload_bytes'] = len(encoded)
             meta['namespace_version'] = ns_v
-            safe_cache_set(cache_key, entry, timeout=timeout)
+            set_timings: dict[str, Any] = {}
+            set_ok = safe_cache_set(cache_key, entry, timeout=timeout, timings=set_timings)
+            meta['cache_set_ok'] = set_ok
+            meta['cache_set_ms'] = set_timings.get('cache_set_ms')
+            meta['cache_set_result'] = set_timings.get('cache_set_result')
+            meta['cache_set_raw_type'] = set_timings.get('cache_set_raw_type')
+            if set_timings.get('cache_set_exception'):
+                meta['cache_set_exception'] = set_timings['cache_set_exception']
+            # Keep redis payload size after successful encode regardless of SET outcome.
+            meta['redis_payload_bytes'] = len(encoded)
         except Exception:
             logger.warning(
                 'traffic_filter cache encode/set failed key_suffix=%s',

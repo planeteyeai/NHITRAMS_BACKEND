@@ -1194,6 +1194,35 @@ class InventoryFilterPaginationTests(TestCase):
     @patch('inventory.views.build_inventory_filter_groups')
     @patch('inventory.views.build_inventory_filter_queryset')
     @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_page_size_100000_headers_and_body_contract(self, mock_build_qs, mock_build_groups):
+        """page_size=100000 is accepted; body + pagination headers stay NHIT-shaped."""
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 250000
+        mock_build_groups.return_value = self.mock_groups
+
+        payload = {**self.payload, 'page': 1, 'page_size': 100000}
+        mock_build_groups.reset_mock()
+        response = self.client.post('/inventory_filter/', payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        body = json.loads(response.content)
+        self.assertEqual(body, self.mock_groups)
+        self.assertIsInstance(body, list)
+        self.assertEqual(response['X-Inventory-Paginated'], 'true')
+        self.assertEqual(response['X-Inventory-Page'], '1')
+        self.assertEqual(response['X-Inventory-Page-Size'], '100000')
+        self.assertEqual(response['X-Inventory-Row-Count'], '250000')
+        self.assertEqual(response['X-Inventory-Has-More'], 'true')
+        matching = [
+            call
+            for call in mock_build_groups.call_args_list
+            if call.kwargs.get('limit') == 100000 and call.kwargs.get('offset') == 0
+        ]
+        self.assertEqual(len(matching), 1)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
     def test_middle_page_same_total_count(self, mock_build_qs, mock_build_groups):
         mock_qs = mock_build_qs.return_value
         mock_qs.count.return_value = 12000
@@ -1275,7 +1304,7 @@ class InventoryFilterPaginationTests(TestCase):
         self.assertEqual(serializer.validated_data['page'], 1)
         self.assertEqual(serializer.validated_data['page_size'], 15000)
 
-    def test_page_size_accepts_5000_through_50000(self):
+    def test_page_size_accepts_5000_through_100000(self):
         from inventory.serializers import InventoryFilterSerializer
 
         base = {
@@ -1286,12 +1315,12 @@ class InventoryFilterPaginationTests(TestCase):
             'project_name': ['Agra Bypass Road'],
             'asset_type': ['All'],
         }
-        for page_size in (5000, 15000, 25000, 50000):
+        for page_size in (5000, 15000, 25000, 50000, 100000):
             serializer = InventoryFilterSerializer(data={**base, 'page_size': page_size})
             self.assertTrue(serializer.is_valid(), serializer.errors)
             self.assertEqual(serializer.validated_data['page_size'], page_size)
 
-    def test_page_size_rejects_above_50000(self):
+    def test_page_size_rejects_above_100000(self):
         from inventory.serializers import InventoryFilterSerializer
 
         serializer = InventoryFilterSerializer(
@@ -1302,11 +1331,27 @@ class InventoryFilterPaginationTests(TestCase):
                 'direction': ['All'],
                 'project_name': ['Agra Bypass Road'],
                 'asset_type': ['All'],
-                'page_size': 50001,
+                'page_size': 100001,
             }
         )
         self.assertFalse(serializer.is_valid())
         self.assertIn('page_size', serializer.errors)
+
+    def test_page_size_zero_and_negative_rejected(self):
+        from inventory.serializers import InventoryFilterSerializer
+
+        base = {
+            'chainage_start': 0,
+            'chainage_end': 100,
+            'date': '2026-04-20',
+            'direction': ['All'],
+            'project_name': ['Agra Bypass Road'],
+            'asset_type': ['All'],
+        }
+        for page_size in (0, -1):
+            serializer = InventoryFilterSerializer(data={**base, 'page_size': page_size})
+            self.assertFalse(serializer.is_valid())
+            self.assertIn('page_size', serializer.errors)
 
     def test_values_path_matches_model_instance_serialization(self):
         """Dict rows from values()+quantity_value must match model-style rows."""

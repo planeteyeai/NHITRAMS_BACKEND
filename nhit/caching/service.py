@@ -111,6 +111,17 @@ def safe_cache_get_many(keys: list[str]) -> dict[str, Any]:
         return {}
 
 
+def _cache_op_result_token(result: Any) -> str:
+    """Normalize cache backend return values for diagnostic logs (no secrets)."""
+    if result is None:
+        return 'none'
+    if result is True:
+        return 'true'
+    if result is False:
+        return 'false'
+    return type(result).__name__
+
+
 def safe_cache_set(
     key: str,
     value: Any,
@@ -119,16 +130,26 @@ def safe_cache_set(
     timings: dict[str, Any] | None = None,
 ) -> bool:
     if not is_cache_usable():
+        if timings is not None:
+            timings['cache_set_result'] = 'skipped_cache_disabled'
+            timings['cache_set_ms'] = 0
         return False
     try:
         start = time.perf_counter()
         result = cache.set(key, value, timeout=timeout)
+        elapsed_ms = (time.perf_counter() - start) * 1000
         if timings is not None:
             timings['cache_write_ms'] = round(
-                float(timings.get('cache_write_ms') or 0)
-                + (time.perf_counter() - start) * 1000,
+                float(timings.get('cache_write_ms') or 0) + elapsed_ms,
                 2,
             )
+            # Explicit Redis SET diagnostics (distinct from encode_ms).
+            timings['cache_set_ms'] = round(
+                float(timings.get('cache_set_ms') or 0) + elapsed_ms,
+                2,
+            )
+            timings['cache_set_result'] = _cache_op_result_token(result)
+            timings['cache_set_raw_type'] = type(result).__name__
         # django-redis + IGNORE_EXCEPTIONS returns None on connection failure.
         # Other backends may return None/True; only treat Redis None as failure.
         if result is None and is_redis_configured():
@@ -139,25 +160,62 @@ def safe_cache_set(
             return False
         logger.debug('cache SET key_suffix=%s ttl=%s', key[-12:], timeout)
         return True
-    except Exception:
+    except Exception as exc:
+        if timings is not None:
+            timings['cache_set_result'] = 'exception'
+            timings['cache_set_exception'] = type(exc).__name__
         logger.warning('cache set failed key_suffix=%s', key[-12:], exc_info=True)
         return False
 
 
-def _acquire_population_lock(namespace: str, digest: str) -> bool:
+def _acquire_population_lock(
+    namespace: str,
+    digest: str,
+    *,
+    diag: dict[str, Any] | None = None,
+) -> bool:
     lock_key = _lock_key(namespace, digest)
     try:
-        return cache.add(lock_key, '1', timeout=CACHE_LOCK_TIMEOUT_SECONDS)
-    except Exception:
+        start = time.perf_counter()
+        result = cache.add(lock_key, '1', timeout=CACHE_LOCK_TIMEOUT_SECONDS)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if diag is not None:
+            diag['lock_add_result'] = _cache_op_result_token(result)
+            diag['lock_add_raw_type'] = type(result).__name__
+            diag['lock_add_ms'] = round(elapsed_ms, 2)
+            # None (IGNORE_EXCEPTIONS swallow) and False both mean "not acquired".
+            diag['lock_acquired'] = bool(result)
+        # Preserve historical behavior: only an explicit True-ish add wins the lock.
+        return bool(result)
+    except Exception as exc:
         logger.warning('cache lock acquire failed namespace=%s', namespace, exc_info=True)
+        if diag is not None:
+            diag['lock_add_result'] = 'exception'
+            diag['lock_add_exception'] = type(exc).__name__
+            # Historical behavior on exception: proceed as builder (acquired=True).
+            diag['lock_acquired'] = True
         return True
 
 
-def _release_population_lock(namespace: str, digest: str) -> None:
+def _release_population_lock(
+    namespace: str,
+    digest: str,
+    *,
+    diag: dict[str, Any] | None = None,
+) -> None:
     lock_key = _lock_key(namespace, digest)
     try:
-        cache.delete(lock_key)
-    except Exception:
+        start = time.perf_counter()
+        result = cache.delete(lock_key)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if diag is not None:
+            diag['cache_delete_result'] = _cache_op_result_token(result)
+            diag['cache_delete_raw_type'] = type(result).__name__
+            diag['cache_delete_ms'] = round(elapsed_ms, 2)
+    except Exception as exc:
+        if diag is not None:
+            diag['cache_delete_result'] = 'exception'
+            diag['cache_delete_exception'] = type(exc).__name__
         logger.warning('cache lock release failed namespace=%s', namespace, exc_info=True)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 from django.db.models import Q
@@ -111,8 +112,38 @@ class TrafficFilterView(APIView):
             stage_timings['cache_get_ms'] = meta.get('redis_get_ms')
             stage_timings['cache_lookup_ms'] = meta.get('redis_get_ms')
             stage_timings['cache_decode_ms'] = meta.get('decode_ms') or meta.get('extract_ms') or 0
+            # Distinguish encode CPU from Redis SET (do not overwrite redis timing).
             if meta.get('encode_ms') is not None:
+                stage_timings['encode_ms'] = meta.get('encode_ms')
+                # Legacy field retained for existing log consumers; means encode, not SET.
                 stage_timings['cache_write_ms'] = meta.get('encode_ms')
+            if meta.get('cache_set_ms') is not None:
+                stage_timings['cache_set_ms'] = meta.get('cache_set_ms')
+                stage_timings['redis_set_ms'] = meta.get('cache_set_ms')
+            for key in (
+                'cache_set_result',
+                'cache_set_ok',
+                'cache_set_raw_type',
+                'cache_set_exception',
+                'lock_acquired',
+                'lock_add_result',
+                'lock_add_raw_type',
+                'lock_add_ms',
+                'lock_add_exception',
+                'wait_sleep_ms',
+                'wait_poll_count',
+                'wait_found_entry',
+                'cache_delete_result',
+                'cache_delete_raw_type',
+                'cache_delete_ms',
+                'cache_delete_exception',
+                'redis_round_trips',
+                'namespace_version',
+                'cache_key_suffix',
+                'response_path',
+            ):
+                if key in meta and meta.get(key) is not None:
+                    stage_timings[key] = meta.get(key)
             if cache_hit and 'python_ms' not in stage_timings:
                 stage_timings['python_ms'] = 0
             stage_timings['json_ms'] = meta.get('render_ms') or 0
@@ -134,6 +165,7 @@ class TrafficFilterView(APIView):
                 'logged': False,
                 'response_path': response_path,
                 'namespace': CACHE_NS_TRAFFIC_FILTER,
+                'worker_pid': os.getpid(),
             }
             django_request = getattr(request, '_request', request)
             setattr(django_request, REQUEST_PERF_ATTR, perf_payload)
