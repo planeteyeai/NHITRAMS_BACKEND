@@ -10,7 +10,7 @@ from django.db.models import Case, F, FloatField, Value, When
 # NHIT production default when page_size is omitted from POST body.
 DEFAULT_INVENTORY_FILTER_PAGE_SIZE = 15000
 # Hard upper bound for POST /inventory_filter/ page_size.
-MAX_INVENTORY_FILTER_PAGE_SIZE = 100000
+MAX_INVENTORY_FILTER_PAGE_SIZE = 150000
 
 INVENTORY_FILTER_HEADER_PAGINATED = 'X-Inventory-Paginated'
 INVENTORY_FILTER_HEADER_PAGE = 'X-Inventory-Page'
