@@ -1224,7 +1224,7 @@ class InventoryFilterPaginationTests(TestCase):
     @patch('inventory.views.build_inventory_filter_queryset')
     @override_settings(NHIT_CACHE_ENABLED=False)
     def test_page_size_150000_headers_and_body_contract(self, mock_build_qs, mock_build_groups):
-        """page_size=150000 is accepted; body + pagination headers stay NHIT-shaped."""
+        """page_size=150000 remains accepted; body + pagination headers stay NHIT-shaped."""
         mock_qs = mock_build_qs.return_value
         mock_qs.count.return_value = 250000
         mock_build_groups.return_value = self.mock_groups
@@ -1246,6 +1246,40 @@ class InventoryFilterPaginationTests(TestCase):
             call
             for call in mock_build_groups.call_args_list
             if call.kwargs.get('limit') == 150000 and call.kwargs.get('offset') == 0
+        ]
+        self.assertEqual(len(matching), 1)
+
+    @patch('inventory.views.build_inventory_filter_groups')
+    @patch('inventory.views.build_inventory_filter_queryset')
+    @override_settings(NHIT_CACHE_ENABLED=False)
+    def test_page_size_200000_headers_and_body_contract(self, mock_build_qs, mock_build_groups):
+        """page_size=200000 is accepted; body + pagination headers stay NHIT-shaped."""
+        mock_qs = mock_build_qs.return_value
+        mock_qs.count.return_value = 250000
+        mock_build_groups.return_value = self.mock_groups
+
+        payload = {**self.payload, 'page': 1, 'page_size': 200000}
+        mock_build_groups.reset_mock()
+        response = self.client.post('/inventory_filter/', payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        body = json.loads(response.content)
+        self.assertEqual(body, self.mock_groups)
+        self.assertIsInstance(body, list)
+        self.assertEqual(response['X-Inventory-Paginated'], 'true')
+        self.assertEqual(response['X-Inventory-Page'], '1')
+        self.assertEqual(response['X-Inventory-Page-Size'], '200000')
+        self.assertEqual(response['X-Inventory-Row-Count'], '250000')
+        self.assertEqual(response['X-Inventory-Has-More'], 'true')
+        # Pagination metadata must remain headers-only (no JSON meta keys).
+        self.assertFalse(
+            isinstance(body, dict)
+            and any(k in body for k in ('page', 'page_size', 'has_more', 'total', 'total_pages'))
+        )
+        matching = [
+            call
+            for call in mock_build_groups.call_args_list
+            if call.kwargs.get('limit') == 200000 and call.kwargs.get('offset') == 0
         ]
         self.assertEqual(len(matching), 1)
 
@@ -1333,7 +1367,7 @@ class InventoryFilterPaginationTests(TestCase):
         self.assertEqual(serializer.validated_data['page'], 1)
         self.assertEqual(serializer.validated_data['page_size'], 15000)
 
-    def test_page_size_accepts_5000_through_150000(self):
+    def test_page_size_accepts_5000_through_200000(self):
         from inventory.serializers import InventoryFilterSerializer
 
         base = {
@@ -1344,12 +1378,12 @@ class InventoryFilterPaginationTests(TestCase):
             'project_name': ['Agra Bypass Road'],
             'asset_type': ['All'],
         }
-        for page_size in (5000, 15000, 25000, 50000, 100000, 150000):
+        for page_size in (5000, 15000, 25000, 50000, 100000, 150000, 200000):
             serializer = InventoryFilterSerializer(data={**base, 'page_size': page_size})
             self.assertTrue(serializer.is_valid(), serializer.errors)
             self.assertEqual(serializer.validated_data['page_size'], page_size)
 
-    def test_page_size_rejects_above_150000(self):
+    def test_page_size_rejects_above_200000(self):
         from inventory.serializers import InventoryFilterSerializer
 
         serializer = InventoryFilterSerializer(
@@ -1360,7 +1394,7 @@ class InventoryFilterPaginationTests(TestCase):
                 'direction': ['All'],
                 'project_name': ['Agra Bypass Road'],
                 'asset_type': ['All'],
-                'page_size': 150001,
+                'page_size': 200001,
             }
         )
         self.assertFalse(serializer.is_valid())
