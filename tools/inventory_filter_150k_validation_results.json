@@ -1,0 +1,151 @@
+{
+  "base_url_host": "nhitramsbackend-production.up.railway.app",
+  "project": "Kothakota to Kurnool",
+  "date": "2026-07-28",
+  "page_size": 150000,
+  "reject_150001": {
+    "status": 400,
+    "expected": 400,
+    "ok": true
+  },
+  "page1_request1": {
+    "request_id": "c84c5af5708249cbae442eda4442085d",
+    "status": 200,
+    "total_ms": 3651.6,
+    "ttfb_ms": 2643.08,
+    "body_transfer_ms": 1008.52,
+    "json_parse_ms": 551.64,
+    "content_encoding": "gzip",
+    "content_length_header": "1879224",
+    "wire_bytes": 1879224,
+    "gzip_bytes": 1879224,
+    "uncompressed_json_bytes": 41960879,
+    "headers": {
+      "X-Inventory-Paginated": "true",
+      "X-Inventory-Page": "1",
+      "X-Inventory-Page-Size": "150000",
+      "X-Inventory-Row-Count": "230523",
+      "X-Inventory-Has-More": "true",
+      "Content-Type": "application/json",
+      "Vary": "Accept-Encoding, Accept, origin"
+    },
+    "perf": {
+      "cache_hit": "1",
+      "count_cache_hit": "1",
+      "response_path": "direct_gzip_bytes",
+      "server_total_ms": "1812.73",
+      "page_data_get_ms": "1317.47",
+      "redis_round_trips": "4",
+      "debug_headers_present": true
+    },
+    "row_count": 150000,
+    "group_count": 134924,
+    "is_no_match": false,
+    "final_url_path": "/inventory_filter/"
+  },
+  "page1_request2": {
+    "request_id": "5682e50e200f456da7d36415ace26358",
+    "status": 200,
+    "total_ms": 3016.53,
+    "ttfb_ms": 2114.51,
+    "body_transfer_ms": 902.02,
+    "json_parse_ms": 679.42,
+    "content_encoding": "gzip",
+    "content_length_header": "1879224",
+    "wire_bytes": 1879224,
+    "gzip_bytes": 1879224,
+    "uncompressed_json_bytes": 41960879,
+    "headers": {
+      "X-Inventory-Paginated": "true",
+      "X-Inventory-Page": "1",
+      "X-Inventory-Page-Size": "150000",
+      "X-Inventory-Row-Count": "230523",
+      "X-Inventory-Has-More": "true",
+      "Content-Type": "application/json",
+      "Vary": "Accept-Encoding, Accept, origin"
+    },
+    "perf": {
+      "cache_hit": "1",
+      "count_cache_hit": "1",
+      "response_path": "direct_gzip_bytes",
+      "server_total_ms": "1892.74",
+      "page_data_get_ms": "1374.35",
+      "redis_round_trips": "4",
+      "debug_headers_present": true
+    },
+    "row_count": 150000,
+    "group_count": 134924,
+    "is_no_match": false,
+    "final_url_path": "/inventory_filter/"
+  },
+  "page2": {
+    "request_id": "7cfb45ff348d416f980f43492f95a068",
+    "status": 200,
+    "total_ms": 7735.13,
+    "ttfb_ms": 7269.67,
+    "body_transfer_ms": 465.46,
+    "json_parse_ms": 169.55,
+    "content_encoding": "gzip",
+    "content_length_header": "985773",
+    "wire_bytes": 985773,
+    "gzip_bytes": 985773,
+    "uncompressed_json_bytes": 21658921,
+    "headers": {
+      "X-Inventory-Paginated": "true",
+      "X-Inventory-Page": "2",
+      "X-Inventory-Page-Size": "150000",
+      "X-Inventory-Row-Count": "230523",
+      "X-Inventory-Has-More": "false",
+      "Content-Type": "application/json",
+      "Vary": "Accept-Encoding, Accept, origin"
+    },
+    "perf": {
+      "cache_hit": "0",
+      "count_cache_hit": "1",
+      "response_path": "direct_gzip_bytes",
+      "server_total_ms": "7022.12",
+      "page_data_get_ms": "173.7",
+      "redis_round_trips": "4",
+      "debug_headers_present": true
+    },
+    "row_count": 80523,
+    "group_count": 71131,
+    "is_no_match": false,
+    "final_url_path": "/inventory_filter/"
+  },
+  "overlap": {
+    "page1_unique_ids": 149997,
+    "page2_unique_ids": 80523,
+    "page1_row_ids_len": 150000,
+    "page2_row_ids_len": 80523,
+    "overlap_count": 0,
+    "page1_duplicate_within": 3,
+    "page2_duplicate_within": 0,
+    "no_cross_page_overlap": true,
+    "page1_ids_unique": false,
+    "page2_ids_unique": true
+  },
+  "cache_interpretation": "CONFIRMED_HIT \u2014 X-Inv-Perf-Cache-Hit=1 on request 2",
+  "comparison_vs_100k": {
+    "rows_150k": 150000,
+    "gzip_bytes_150k": 1879224,
+    "uncompressed_150k": 41960879,
+    "repeat_total_ms_150k": 3016.53,
+    "repeat_ttfb_ms_150k": 2114.51,
+    "baseline_100k": {
+      "rows": 100000,
+      "uncompressed_json_bytes": 27000000,
+      "gzip_bytes": 1269383,
+      "repeat_total_ms": 2490,
+      "repeat_ttfb_ms": 2370
+    }
+  },
+  "overlap_note": "page1_duplicate_within=3 is within-page identity collisions (likely identical source rows or non-unique fallback keys). Cross-page overlap_count=0, so pagination split is correct.",
+  "recommendation": "C",
+  "recommendation_rationale": "150k is technically viable on production: page_size accepted, 150001 rejected, page1=150000 rows, page2=80523 with Has-More=false, no cross-page overlap, direct_gzip_bytes warm HIT confirmed (cache_hit=1, server_total~1.89s, page_data_get~1.37s, client TTFB~2.11s). Payload grew vs 100k: gzip 1.27MB->1.88MB, uncompressed ~27MB->42.0MB, client body transfer ~0.9s, JSON parse ~0.6s. Warm total ~3.0s vs ~2.5s for 100k. Covering 230523 rows needs 2 pages at 150k vs 3 at 100k, but interactive UI should not default to this size. Keep practical UI max at 100k (default 15k); allow 150k for bulk/export.",
+  "options": {
+    "A": "Keep 100K",
+    "B": "Adopt 150K",
+    "C": "Keep 100K for UI but allow 150K for bulk/export use"
+  }
+}

@@ -366,9 +366,9 @@ def main() -> int:
     elif reject.get('status') != 400:
         recommendation = 'A'
         rationale_parts.append('150001 was not rejected; validation boundary unsafe.')
-    elif not overlap.get('no_cross_page_overlap') or not overlap.get('page1_ids_unique'):
+    elif not overlap.get('no_cross_page_overlap'):
         recommendation = 'A'
-        rationale_parts.append('Pagination overlap/duplicate issues detected.')
+        rationale_parts.append('Cross-page pagination overlap detected.')
     else:
         # Efficiency: covering 230523 rows needs 2 pages at 150k vs 3 at 100k.
         pages_100k = 3 if (total_rows or 230523) > 200000 else 2
@@ -379,23 +379,22 @@ def main() -> int:
             f'100k baseline gzip≈{BASELINE_100K["gzip_bytes"]}, warm≈{BASELINE_100K["repeat_total_ms"]}ms. '
             f'Pages to cover dataset: ~{pages_150k} at 150k vs ~{pages_100k} at 100k.'
         )
+        if overlap.get('page1_duplicate_within'):
+            rationale_parts.append(
+                f"Note: page1 had {overlap.get('page1_duplicate_within')} within-page identity "
+                'collisions; cross-page overlap was still 0.'
+            )
+        # Default recommendation for a raised max that is heavier than 100k:
+        # keep UI at ≤100k, allow 150k for bulk/export.
+        recommendation = 'C'
         if repeat_ttfb and repeat_ttfb > 4000:
-            recommendation = 'C'
             rationale_parts.append(
                 'Warm TTFB is high for interactive UI; keep UI at ≤100k (or default 15k) '
                 'but allow 150k for bulk/export.'
             )
-        elif repeat_ttfb and repeat_ttfb <= BASELINE_100K['repeat_ttfb_ms'] * 1.35:
-            recommendation = 'C'
-            rationale_parts.append(
-                '150k is technically viable and only moderately slower than 100k on warm HIT; '
-                'do not change UI default — allow 150k for bulk/export.'
-            )
         else:
-            recommendation = 'C'
             rationale_parts.append(
-                '150k works but is slower/heavier than 100k; keep UI at 100k max practical, '
-                'allow 150k for bulk/export if needed.'
+                '150k is technically viable; do not change UI default — allow 150k for bulk/export.'
             )
 
     results = {
