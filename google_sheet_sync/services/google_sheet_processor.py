@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from distress.models import Distress, DistressType, Project, RoadSegment
 from google_sheet_sync.models import GoogleSheetDistress
+from nhit.caching.invalidation import invalidate_distress_predict_filter_cache
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,8 @@ class GoogleSheetProcessor:
                     sync_id=sync_record.sync_id,
                     defaults=defaults,
                 )
+
+            invalidate_distress_predict_filter_cache()
 
             logger.info(
                 'GoogleSheetProcessor: %s distress_id=%s sync_id=%s created=%s',

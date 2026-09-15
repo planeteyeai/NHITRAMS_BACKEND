@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from nhit.caching.constants import (
     CACHE_NS_AIS_FILTER,
+    CACHE_NS_DISTRESS_PREDICT_FILTER,
     CACHE_NS_DISTRESS_REPORT_FILTER,
     CACHE_NS_INVENTORY_FILTER,
     CACHE_NS_INVENTORY_FILTER_MAP,
@@ -35,6 +36,10 @@ def invalidate_inventory_summary_cache() -> int:
 
 def invalidate_distress_report_filter_cache() -> int:
     return bump_namespace_version(CACHE_NS_DISTRESS_REPORT_FILTER)
+
+
+def invalidate_distress_predict_filter_cache() -> int:
+    return bump_namespace_version(CACHE_NS_DISTRESS_PREDICT_FILTER)
 
 
 def invalidate_traffic_filter_cache() -> int:
@@ -70,6 +75,7 @@ def invalidate_all_filter_caches() -> None:
         invalidate_inventory_filter_cache,
         invalidate_inventory_summary_cache,
         invalidate_distress_report_filter_cache,
+        invalidate_distress_predict_filter_cache,
         invalidate_traffic_filter_cache,
         invalidate_pms_filter_cache,
         invalidate_ais_filter_cache,

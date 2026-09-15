@@ -1,5 +1,4 @@
 import logging
-import math
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -27,39 +26,40 @@ from .services.distress_repair import (
     quantity_breakdown,
     resolved_quantities_by_distress_ids,
 )
+from .services.filter_helpers import (
+    CARRIAGE_TYPE_DROPDOWN,
+    apply_carriage_type_filter as _apply_carriage_type_filter,
+    json_safe_float as _json_safe_float,
+)
+from .services.distress_predict_filter_queryset import build_distress_predict_filter_queryset
+from .services.distress_predict_filter_response import (
+    DISTRESS_PREDICT_HEADER_HAS_MORE,
+    DISTRESS_PREDICT_HEADER_PAGE,
+    DISTRESS_PREDICT_HEADER_PAGE_SIZE,
+    DISTRESS_PREDICT_HEADER_PAGINATED,
+    DISTRESS_PREDICT_HEADER_ROW_COUNT,
+    build_distress_predict_filter_page,
+)
+from .services.distress_predict_filter_perf import (
+    is_distress_predict_filter_perf_debug_enabled,
+    log_distress_predict_filter_performance,
+    resolve_request_id,
+    should_log_distress_predict_filter_perf,
+)
 from nhit.caching import CACHE_NS_DISTRESS_REPORT_FILTER, cached_filter_response
+from nhit.caching.accept_encoding import accepts_gzip_encoding
+from nhit.caching.constants import CACHE_TTL_FILTER
+from nhit.caching.distress_predict_filter_count import (
+    distress_predict_filter_filter_hash,
+    get_cached_distress_predict_filter_count,
+)
+from nhit.caching.distress_predict_filter_page import get_cached_distress_predict_filter_page
+from django.http import HttpResponse
+from django.utils.cache import patch_vary_headers
+from rest_framework.renderers import JSONRenderer
+import time
 
 logger = logging.getLogger(__name__)
-
-
-def _json_safe_float(value, default=0.0):
-    """Coerce DB floats to JSON-safe numbers (NaN/Inf → default)."""
-    if value is None:
-        return default
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    if not math.isfinite(number):
-        return default
-    return number
-
-
-CARRIAGE_TYPE_DROPDOWN = [
-    {'id': 'Flexible', 'name': 'Flexible'},
-    {'id': 'Rigid', 'name': 'Rigid'},
-]
-
-
-def _apply_carriage_type_filter(queryset, data):
-    """Filter by segment.carriage_type when carriage_type is provided (not All)."""
-    values = data.get('carriage_type') or []
-    if not values or any(str(v).lower() == 'all' for v in values):
-        return queryset
-    q_objects = Q()
-    for value in values:
-        q_objects |= Q(segment__carriage_type__iexact=value)
-    return queryset.filter(q_objects)
 
 
 class DistressReportFilterView(APIView):
@@ -441,101 +441,143 @@ class DistressPredictFilterView(APIView):
         responses={200: openapi.Response('Success'), 400: 'Bad Request'}
     )
     def post(self, request):
+        request_started = time.perf_counter()
+        request_id = resolve_request_id(request)
+
         serializer = DistressFilterSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
+        page = data['page']
+        page_size = data['page_size']
+        offset = (page - 1) * page_size
+        filter_hash = distress_predict_filter_filter_hash(data)
 
-        # Build queryset with select_related
-        queryset = Distress.objects.select_related('segment', 'project', 'distress_type')
+        queryset = build_distress_predict_filter_queryset(data)
 
-        # Cleaning: exclude null latitude, longitude, project
-        queryset = queryset.filter(
-            latitude__isnull=False,
-            longitude__isnull=False,
-            project__isnull=False
+        count_ms = None
+
+        def count_builder():
+            nonlocal count_ms
+            started = time.perf_counter()
+            value = queryset.count()
+            count_ms = round((time.perf_counter() - started) * 1000, 2)
+            return value
+
+        total_count, count_meta = get_cached_distress_predict_filter_count(
+            payload=data,
+            builder=count_builder,
         )
 
-        # Apply filters (strict)
-        if 'chainage_start' in data and data['chainage_start'] is not None:
-            queryset = queryset.filter(segment__chainage_start__gte=data['chainage_start'])
-        if 'chainage_end' in data and data['chainage_end'] is not None:
-            queryset = queryset.filter(segment__chainage_end__lte=data['chainage_end'])
-        if 'date' in data and data['date']:
-            queryset = queryset.filter(distress_date=data['date'])
-        if 'direction' in data and data['direction'] and not any(d.lower() == 'all' for d in data['direction']):
-            queryset = queryset.filter(segment__direction__in=data['direction'])
-        if 'project_name' in data and data['project_name'] and not any(p.lower() == 'all' for p in data['project_name']):
-            q_objects = Q()
-            for name in data['project_name']:
-                q_objects |= Q(project__project_name__iexact=name)
-            queryset = queryset.filter(q_objects)
-        if 'distress_type' in data and data['distress_type'] and not any(dt.lower() == 'all' for dt in data['distress_type']):
-            q_objects = Q()
-            for dtype in data['distress_type']:
-                q_objects |= Q(distress_type__distress_type_name__iexact=dtype)
-            queryset = queryset.filter(q_objects)
+        if offset >= total_count:
+            return Response({'message': 'No match'}, status=status.HTTP_200_OK)
 
-        queryset = _apply_carriage_type_filter(queryset, data)
+        page_timings: dict = {}
 
-        # Check if no data
-        if not queryset.exists():
-            return Response({"message": "No match"})
-
-        # Distress mapping
-        distress_mapping = {
-            'pothole': 'pothole',
-            'alligator crack': 'alligator_crack',
-            'oblique crack': 'block_crack/oblique_crack',
-            'edge break': 'edge_break',
-            'patching': 'patchwork',
-            'bleeding': 'bleeding',
-            'hotspots': 'hotspots',
-            'rutting': 'rutting',
-            'raveling': 'raveling',
-            'transverse crack': 'transverse_crack',
-            'roughness': 'rough_spot',
-        }
-
-        final_data = []
-        # Materialize once so we can batch-load repair totals without N+1 queries.
-        rows = list(queryset)
-        resolved_map = resolved_quantities_by_distress_ids(
-            [obj.distress_id for obj in rows]
-        )
-        for obj in rows:
-            distress_type_name = obj.distress_type.distress_type_name.lower().replace('_', ' ')
-            breakdown = quantity_breakdown(
-                obj.count_val,
-                resolved_map.get(obj.distress_id, 0.0),
+        def build_response():
+            return build_distress_predict_filter_page(
+                queryset,
+                offset=offset,
+                limit=page_size,
+                timings=page_timings,
             )
-            # Display fields use remaining so FE count decreases after repair.
-            # Original AI prediction stays in predicted_quantity (DB unchanged).
-            display_qty = breakdown['remaining_quantity']
-            item = {
-                'distress_id': obj.distress_id,
-                'latitude': _json_safe_float(obj.latitude),
-                'longitude': _json_safe_float(obj.longitude),
-                'project_name': obj.project.project_name,
-                'chainage_start': _json_safe_float(obj.segment.chainage_start),
-                'chainage_end': _json_safe_float(obj.segment.chainage_end),
-                'total_distress': display_qty,
-                'predicted_quantity': breakdown['predicted_quantity'],
-                'resolved_quantity': breakdown['resolved_quantity'],
-                'remaining_quantity': breakdown['remaining_quantity'],
-                'distress_type': obj.distress_type.distress_type_name.title(),
-                'direction': obj.segment.direction.lower(),
-                'lane': obj.segment.lane or "",
-                'date': obj.distress_date.strftime('%Y-%m-%d') if obj.distress_date else None,
-                'carriage_type': obj.segment.carriage_type or "",
-            }
-            # Set distress type specific fields
-            for key, field in distress_mapping.items():
-                item[field] = display_qty if distress_type_name == key else 0
-            final_data.append(item)
 
-        return Response([final_data])
+        accept_gzip = accepts_gzip_encoding(request.META.get('HTTP_ACCEPT_ENCODING'))
+        serve_mode = 'gzip_bytes' if accept_gzip else 'json_bytes'
+
+        page_body, page_meta = get_cached_distress_predict_filter_page(
+            payload=data,
+            builder=build_response,
+            timeout=CACHE_TTL_FILTER,
+            serve_mode=serve_mode,
+        )
+
+        response_path = page_meta.get('response_path') or 'python_object'
+        if response_path == 'direct_gzip_bytes':
+            response = HttpResponse(
+                page_body,
+                content_type='application/json',
+                status=status.HTTP_200_OK,
+            )
+            response['Content-Encoding'] = 'gzip'
+            response['Content-Length'] = str(len(page_body))
+            patch_vary_headers(response, ('Accept-Encoding',))
+        elif response_path == 'direct_json_bytes':
+            response = HttpResponse(
+                page_body,
+                content_type='application/json',
+                status=status.HTTP_200_OK,
+            )
+            response['Content-Length'] = str(len(page_body))
+            patch_vary_headers(response, ('Accept-Encoding',))
+        else:
+            response = Response(page_body, status=status.HTTP_200_OK)
+
+        has_more = (offset + page_size) < total_count
+        response[DISTRESS_PREDICT_HEADER_PAGINATED] = 'true'
+        response[DISTRESS_PREDICT_HEADER_PAGE] = str(page)
+        response[DISTRESS_PREDICT_HEADER_PAGE_SIZE] = str(page_size)
+        response[DISTRESS_PREDICT_HEADER_ROW_COUNT] = str(total_count)
+        response[DISTRESS_PREDICT_HEADER_HAS_MORE] = 'true' if has_more else 'false'
+
+        total_ms = round((time.perf_counter() - request_started) * 1000, 2)
+        count_hit = bool(count_meta.get('cache_hit'))
+        page_hit = bool(page_meta.get('cache_hit'))
+        query_count = (0 if count_hit else 1) + (0 if page_hit else 1)
+
+        if should_log_distress_predict_filter_perf(total_ms):
+            if response_path == 'direct_gzip_bytes':
+                render_ms = 0
+                response_bytes = int(page_meta.get('http_body_bytes') or len(page_body))
+                http_gzip = 'passthrough'
+            elif response_path == 'direct_json_bytes':
+                render_ms = page_meta.get('render_ms')
+                if render_ms is None and page_hit:
+                    render_ms = 0
+                response_bytes = int(page_meta.get('http_body_bytes') or len(page_body))
+                http_gzip = 'skipped'
+            else:
+                render_started = time.perf_counter()
+                response_bytes = len(JSONRenderer().render(page_body))
+                render_ms = round((time.perf_counter() - render_started) * 1000, 2)
+                http_gzip = 'middleware'
+            log_fields = {
+                'request_id': request_id,
+                'endpoint': '/distress_predict_filter/',
+                'page': page,
+                'page_size': page_size,
+                'filter_hash': filter_hash,
+                'count_cache_hit': count_hit,
+                'cache_hit': page_hit,
+                'cache_format': page_meta.get('cache_repr'),
+                'response_path': response_path,
+                'accept_gzip': accept_gzip,
+                'count_ms': count_ms,
+                'select_ms': page_timings.get('select_ms'),
+                'repair_lookup_ms': page_timings.get('repair_lookup_ms'),
+                'serialize_ms': page_timings.get('serialize_ms'),
+                'build_ms': page_meta.get('build_ms'),
+                'redis_get_ms': page_meta.get('redis_get_ms'),
+                'cache_decode_ms': page_meta.get('decode_ms') or page_meta.get('extract_ms'),
+                'render_ms': render_ms,
+                'http_gzip': http_gzip,
+                'total_ms': total_ms,
+                'server_total_ms': total_ms,
+                'query_count': query_count,
+                'response_bytes': response_bytes,
+                'content_length': response.get('Content-Length'),
+            }
+            if is_distress_predict_filter_perf_debug_enabled():
+                log_fields.update({
+                    'count_version_get_ms': count_meta.get('version_get_ms'),
+                    'page_version_get_ms': page_meta.get('version_get_ms'),
+                    'page_data_get_ms': page_meta.get('page_data_get_ms') or page_meta.get('redis_get_ms'),
+                    'redis_payload_bytes': page_meta.get('redis_payload_bytes'),
+                })
+            log_distress_predict_filter_performance(log_fields)
+
+        return response
 
 
 class DistressCarriageTypeMasterView(APIView):

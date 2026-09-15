@@ -41,6 +41,11 @@ TRAFFIC_FILTER_PERF_DEBUG = _env_bool('TRAFFIC_FILTER_PERF_DEBUG', default=False
 # When true: always emit structured inventory_filter_performance logs with Redis stage detail.
 INVENTORY_FILTER_PERF_DEBUG = _env_bool('INVENTORY_FILTER_PERF_DEBUG', default=False)
 
+# Temporary distress_predict_filter production timing (measurement only). Default OFF.
+DISTRESS_PREDICT_FILTER_PERF_DEBUG = _env_bool(
+    'DISTRESS_PREDICT_FILTER_PERF_DEBUG', default=False
+)
+
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -264,6 +269,11 @@ CORS_EXPOSE_HEADERS = [
     'X-Inventory-Page-Size',
     'X-Inventory-Row-Count',
     'X-Inventory-Has-More',
+    'X-Distress-Paginated',
+    'X-Distress-Page',
+    'X-Distress-Page-Size',
+    'X-Distress-Row-Count',
+    'X-Distress-Has-More',
     'Content-Disposition',
     # Present only when INVENTORY_FILTER_PERF_DEBUG=true (measurement headers).
     'X-Inv-Perf-Request-Id',
@@ -396,6 +406,11 @@ LOGGING = {
         'nhit.inventory_filter.perf': {
             'handlers': ['console'],
             'level': os.environ.get('NHIT_INVENTORY_FILTER_PERF_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+        'nhit.distress_predict_filter.perf': {
+            'handlers': ['console'],
+            'level': os.environ.get('NHIT_DISTRESS_PREDICT_FILTER_PERF_LOG_LEVEL', 'INFO'),
             'propagate': False,
         },
         'nhit.traffic_filter.perf': {

@@ -11,6 +11,7 @@ from django.utils import timezone
 from rest_framework.exceptions import APIException, NotFound, ValidationError
 
 from distress.models import Distress, DistressRepairLog
+from nhit.caching.invalidation import invalidate_distress_predict_filter_cache
 
 RESOLVED_STATUSES = (
     DistressRepairLog.STATUS_REPAIRED,
@@ -192,6 +193,8 @@ def record_distress_repair(
         updated_at=timezone.now(),
         remarks=str(remarks or '').strip(),
     )
+
+    invalidate_distress_predict_filter_cache()
 
     resolved_after = resolved_so_far + quantity
     remaining_after = max(predicted_quantity - resolved_after, 0.0)

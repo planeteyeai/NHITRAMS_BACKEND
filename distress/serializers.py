@@ -1,6 +1,10 @@
 from rest_framework import serializers
 
 from .models import DistressReport
+from .services.distress_predict_filter_response import (
+    DEFAULT_DISTRESS_PREDICT_FILTER_PAGE_SIZE,
+    MAX_DISTRESS_PREDICT_FILTER_PAGE_SIZE,
+)
 
 
 class DistressReportWriteSerializer(serializers.ModelSerializer):
@@ -156,6 +160,13 @@ class DistressFilterSerializer(serializers.Serializer):
         child=serializers.CharField(max_length=100),
         required=False,
         help_text='Carriage types: Rigid, Flexible, or ["All"] to skip.',
+    )
+    page = serializers.IntegerField(required=False, default=1, min_value=1)
+    page_size = serializers.IntegerField(
+        required=False,
+        default=DEFAULT_DISTRESS_PREDICT_FILTER_PAGE_SIZE,
+        min_value=1,
+        max_value=MAX_DISTRESS_PREDICT_FILTER_PAGE_SIZE,
     )
 
     def validate_carriage_type(self, value):
