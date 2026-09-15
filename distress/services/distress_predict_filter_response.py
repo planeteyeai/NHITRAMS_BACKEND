@@ -48,34 +48,57 @@ DISTRESS_TYPE_FIELD_MAPPING = {
     'rough spot': 'rough_spot',
 }
 
+# Columns required to build the HTTP response (MISS projection).
+PREDICTED_DISTRESS_RESPONSE_VALUES = (
+    'predicted_distress_id',
+    'latitude',
+    'longitude',
+    'project_name',
+    'chainage_start',
+    'chainage_end',
+    'total_distress',
+    'distress_type',
+    'direction',
+    'lane',
+    'distress_date',
+    'carriage_type',
+)
+
 
 def _normalize_type_name(raw: str | None) -> str:
     return str(raw or '').lower().replace('_', ' ').strip()
 
 
-def serialize_distress_predict_row(obj, resolved_qty: float) -> dict[str, Any]:
-    """Serialize one ``PredictedDistress`` row to the API response dict."""
-    distress_type_name = _normalize_type_name(obj.distress_type)
-    breakdown = quantity_breakdown(obj.total_distress, resolved_qty)
+def _row_get(row: Any, name: str):
+    if isinstance(row, dict):
+        return row.get(name)
+    return getattr(row, name, None)
+
+
+def serialize_distress_predict_row(row, resolved_qty: float) -> dict[str, Any]:
+    """Serialize one predicted row (ORM instance or values() dict) to API dict."""
+    distress_type_raw = _row_get(row, 'distress_type')
+    distress_type_name = _normalize_type_name(distress_type_raw)
+    breakdown = quantity_breakdown(_row_get(row, 'total_distress'), resolved_qty)
     display_qty = breakdown['remaining_quantity']
-    direction = str(obj.direction or '').lower()
+    direction = str(_row_get(row, 'direction') or '').lower()
+    distress_date = _row_get(row, 'distress_date')
     item = {
-        # FE / repair contract keeps the key name ``distress_id``.
-        'distress_id': obj.predicted_distress_id,
-        'latitude': json_safe_float(obj.latitude),
-        'longitude': json_safe_float(obj.longitude),
-        'project_name': obj.project_name or '',
-        'chainage_start': json_safe_float(obj.chainage_start),
-        'chainage_end': json_safe_float(obj.chainage_end),
+        'distress_id': _row_get(row, 'predicted_distress_id'),
+        'latitude': json_safe_float(_row_get(row, 'latitude')),
+        'longitude': json_safe_float(_row_get(row, 'longitude')),
+        'project_name': _row_get(row, 'project_name') or '',
+        'chainage_start': json_safe_float(_row_get(row, 'chainage_start')),
+        'chainage_end': json_safe_float(_row_get(row, 'chainage_end')),
         'total_distress': display_qty,
         'predicted_quantity': breakdown['predicted_quantity'],
         'resolved_quantity': breakdown['resolved_quantity'],
         'remaining_quantity': breakdown['remaining_quantity'],
-        'distress_type': str(obj.distress_type or '').title(),
+        'distress_type': str(distress_type_raw or '').title(),
         'direction': direction,
-        'lane': obj.lane or '',
-        'date': obj.distress_date.strftime('%Y-%m-%d') if obj.distress_date else None,
-        'carriage_type': obj.carriage_type or '',
+        'lane': _row_get(row, 'lane') or '',
+        'date': distress_date.strftime('%Y-%m-%d') if distress_date else None,
+        'carriage_type': _row_get(row, 'carriage_type') or '',
     }
     active_field = DISTRESS_TYPE_FIELD_MAPPING.get(distress_type_name)
     response_sparse_fields = (
@@ -105,14 +128,14 @@ def build_distress_predict_filter_page(
 ) -> list[list[dict[str, Any]]]:
     """Build nested-list page body: ``[rows]`` matching the API contract."""
     t0 = time.perf_counter()
-    page_qs = queryset[offset : offset + limit]
+    page_qs = queryset.values(*PREDICTED_DISTRESS_RESPONSE_VALUES)[offset : offset + limit]
     rows = list(page_qs)
     if timings is not None:
         timings['select_ms'] = round((time.perf_counter() - t0) * 1000, 2)
 
     t1 = time.perf_counter()
     resolved_map = resolved_quantities_by_distress_ids(
-        [obj.predicted_distress_id for obj in rows]
+        [row['predicted_distress_id'] for row in rows]
     )
     if timings is not None:
         timings['repair_lookup_ms'] = round((time.perf_counter() - t1) * 1000, 2)
@@ -120,9 +143,9 @@ def build_distress_predict_filter_page(
     t2 = time.perf_counter()
     final_data = [
         serialize_distress_predict_row(
-            obj, resolved_map.get(obj.predicted_distress_id, 0.0)
+            row, resolved_map.get(row['predicted_distress_id'], 0.0)
         )
-        for obj in rows
+        for row in rows
     ]
     if timings is not None:
         timings['serialize_ms'] = round((time.perf_counter() - t2) * 1000, 2)

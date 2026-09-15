@@ -69,16 +69,13 @@ _LOCMEM = {
 }
 
 
-@override_settings(NHIT_CACHE_ENABLED=True, CACHES=_LOCMEM, JWT_SECRET_KEY='test-jwt-secret')
+@override_settings(NHIT_CACHE_ENABLED=True, CACHES=_LOCMEM)
 class DistressPredictDirectGzipTests(TestCase):
     databases = {'default'}
 
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        from authentication.jwt_utils import create_access_token
-
-        self.auth = {'HTTP_AUTHORIZATION': f'Bearer {create_access_token("cache.tester")}'}
         self.payload = dict(BASE_PAYLOAD)
 
     def _mock_qs(self, total=1):
@@ -90,7 +87,7 @@ class DistressPredictDirectGzipTests(TestCase):
         mock_build_qs.return_value = self._mock_qs(total=total)
         mock_build_page.return_value = SAMPLE_PAGE
         warm = self.client.post(
-            '/distress_predict_filter/', self.payload, format='json', **self.auth
+            '/distress_predict_filter/', self.payload, format='json'
         )
         self.assertEqual(warm.status_code, status.HTTP_200_OK, warm.content)
         return warm
@@ -122,7 +119,6 @@ class DistressPredictDirectGzipTests(TestCase):
             self.payload,
             format='json',
             HTTP_ACCEPT_ENCODING='gzip',
-            **self.auth,
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response['Content-Type'].startswith('application/json'))
@@ -149,7 +145,6 @@ class DistressPredictDirectGzipTests(TestCase):
             self.payload,
             format='json',
             HTTP_ACCEPT_ENCODING='gzip',
-            **self.auth,
         )
         self.assertEqual(mock_build_page.call_count, before_page)
         # Count may still be a Redis HIT; queryset.count must not run again on page HIT
@@ -161,14 +156,12 @@ class DistressPredictDirectGzipTests(TestCase):
     def test_decompression_parity(self, mock_build_qs, mock_build_page):
         self._warm(mock_build_qs, mock_build_page)
         plain = self.client.post(
-            '/distress_predict_filter/', self.payload, format='json', **self.auth
-        )
+            '/distress_predict_filter/', self.payload, format='json'        )
         gzipped = self.client.post(
             '/distress_predict_filter/',
             self.payload,
             format='json',
             HTTP_ACCEPT_ENCODING='gzip',
-            **self.auth,
         )
         self.assertIsNone(plain.get('Content-Encoding'))
         self.assertEqual(gzip.decompress(gzipped.content), plain.content)
@@ -186,7 +179,6 @@ class DistressPredictDirectGzipTests(TestCase):
             self.payload,
             format='json',
             HTTP_ACCEPT_ENCODING='gzip',
-            **self.auth,
         )
         factory = RequestFactory()
         req = factory.post('/distress_predict_filter/', data=b'{}', content_type='application/json')
@@ -213,7 +205,6 @@ class DistressPredictDirectGzipTests(TestCase):
             self.payload,
             format='json',
             HTTP_ACCEPT_ENCODING='gzip;q=0',
-            **self.auth,
         )
         self.assertNotEqual(bytes(r.content), gzip_payload)
         if r.get('Content-Encoding') == 'gzip':
@@ -240,8 +231,7 @@ class DistressPredictDirectGzipTests(TestCase):
                 cache.clear()
                 mock_build_page.reset_mock()
                 self.client.post(
-                    '/distress_predict_filter/', self.payload, format='json', **self.auth
-                )
+                    '/distress_predict_filter/', self.payload, format='json'                )
                 _, key = self._cached_raw()
                 safe_cache_set(key, bad, timeout=CACHE_TTL_FILTER)
                 before = mock_build_page.call_count
@@ -250,7 +240,6 @@ class DistressPredictDirectGzipTests(TestCase):
                     self.payload,
                     format='json',
                     HTTP_ACCEPT_ENCODING='gzip',
-                    **self.auth,
                 )
                 self.assertEqual(r.status_code, status.HTTP_200_OK)
                 self.assertEqual(gzip.decompress(r.content), expected)

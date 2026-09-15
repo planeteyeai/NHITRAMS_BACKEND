@@ -1,0 +1,192 @@
+{
+  "measurement_kind": "MEASURED",
+  "redis": {
+    "host_class": "railway_public_proxy",
+    "port": 45692,
+    "backend": "django_redis.cache.RedisCache",
+    "client": "django_redis.client.DefaultClient",
+    "using_internal_flag": false,
+    "railway_runtime": false,
+    "internal_url_env_set": true,
+    "public_url_env_set": true
+  },
+  "namespace_version": 13,
+  "audit_payload": {
+    "miss": {
+      "wall_ms": 7715.1,
+      "status": 200,
+      "row_count": "1226",
+      "event": {
+        "server_total_ms": 7124.3,
+        "count_ms": 899.31,
+        "select_ms": 481.07,
+        "repair_lookup_ms": 110.67,
+        "serialize_ms": 14.73,
+        "build_ms": 606.73,
+        "redis_round_trips": 2,
+        "lookup_path": "mget_partial_rebuild_page",
+        "response_bytes": 24297,
+        "cache_hit": false,
+        "count_cache_hit": false
+      },
+      "gzip_bytes": 24297,
+      "json_bytes": 671412
+    },
+    "hit": {
+      "wall_client_ms": {
+        "n": 20,
+        "min": 836.89,
+        "median": 1072.12,
+        "p95": 1689.67,
+        "max": 2013.18,
+        "mean": 1140.77
+      },
+      "server_total_ms": {
+        "n": 20,
+        "min": 834.77,
+        "median": 1069.67,
+        "p95": 1687.81,
+        "max": 2010.69,
+        "mean": 1138.59
+      },
+      "mget_ms": {
+        "n": 20,
+        "min": 431.66,
+        "median": 594.89,
+        "p95": 936.43,
+        "max": 1004.07,
+        "mean": 645.25
+      },
+      "count_version_get_ms": {
+        "n": 20,
+        "min": 316.05,
+        "median": 425.32,
+        "p95": 1076.51,
+        "max": 1113.2,
+        "mean": 490.55
+      },
+      "redis_round_trips": {
+        "n": 20,
+        "min": 2,
+        "median": 2.0,
+        "p95": 2.0,
+        "max": 2,
+        "mean": 2
+      },
+      "redis_get_ms": {
+        "n": 20,
+        "min": 431.66,
+        "median": 594.89,
+        "p95": 936.43,
+        "max": 1004.07,
+        "mean": 645.25
+      },
+      "cache_decode_ms": {
+        "n": 20,
+        "min": 0.0,
+        "median": 0.01,
+        "p95": 0.01,
+        "max": 0.02,
+        "mean": 0.01
+      },
+      "lookup_path": "mget_hit",
+      "response_path": "direct_gzip_bytes",
+      "cache_hit_all": true,
+      "headers_sample": {
+        "X-Distress-Row-Count": "1226",
+        "X-Distress-Has-More": "false",
+        "Content-Encoding": "gzip",
+        "Content-Type": "application/json"
+      }
+    }
+  },
+  "large_payload": {
+    "miss": {
+      "wall_ms": 30519.87,
+      "status": 200,
+      "row_count": "106626",
+      "event": {
+        "server_total_ms": 30517.82,
+        "count_ms": 93.18,
+        "select_ms": 19576.94,
+        "repair_lookup_ms": 2053.61,
+        "serialize_ms": 574.08,
+        "build_ms": 22229.79,
+        "redis_round_trips": 2,
+        "lookup_path": "mget_partial_rebuild_page",
+        "response_bytes": 1230693,
+        "cache_hit": false,
+        "count_cache_hit": false
+      },
+      "gzip_bytes": 1230693,
+      "json_bytes": 57651235
+    },
+    "hit": {
+      "wall_client_ms": {
+        "n": 10,
+        "min": 2706.28,
+        "median": 3975.23,
+        "p95": 13499.32,
+        "max": 20439.02,
+        "mean": 5413.98
+      },
+      "server_total_ms": {
+        "n": 10,
+        "min": 2705.09,
+        "median": 3974.32,
+        "p95": 13497.91,
+        "max": 20437.38,
+        "mean": 5412.91
+      },
+      "mget_ms": {
+        "n": 10,
+        "min": 1084.59,
+        "median": 3180.28,
+        "p95": 4430.17,
+        "max": 4607.16,
+        "mean": 3107.5
+      },
+      "count_version_get_ms": {
+        "n": 10,
+        "min": 388.5,
+        "median": 408.16,
+        "p95": 430.92,
+        "max": 441.92,
+        "mean": 410.29
+      },
+      "redis_round_trips": {
+        "n": 10,
+        "min": 2,
+        "median": 2.0,
+        "p95": 2.0,
+        "max": 2,
+        "mean": 2
+      },
+      "redis_get_ms": {
+        "n": 10,
+        "min": 300.83,
+        "median": 3180.28,
+        "p95": 4430.17,
+        "max": 4607.16,
+        "mean": 3029.12
+      },
+      "cache_decode_ms": {
+        "n": 9,
+        "min": 0.27,
+        "median": 0.29,
+        "p95": 0.39,
+        "max": 0.41,
+        "mean": 0.31
+      },
+      "lookup_path": "mget_partial_rebuild_page",
+      "response_path": "direct_gzip_bytes",
+      "cache_hit_all": false,
+      "headers_sample": {
+        "X-Distress-Row-Count": "106626",
+        "X-Distress-Has-More": "false",
+        "Content-Encoding": "gzip",
+        "Content-Type": "application/json"
+      }
+    }
+  }
+}

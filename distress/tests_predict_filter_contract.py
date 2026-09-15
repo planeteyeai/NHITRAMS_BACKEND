@@ -9,7 +9,6 @@ from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from authentication.jwt_utils import create_access_token
 from distress.models import DistressRepairLog, PredictedDistress
 from distress.serializers import DistressFilterSerializer
 from distress.services.distress_predict_filter_response import (
@@ -87,7 +86,7 @@ def _make_row(**overrides):
     return PredictedDistress.objects.create(**defaults)
 
 
-@override_settings(JWT_SECRET_KEY='test-jwt-secret', NHIT_CACHE_ENABLED=False)
+@override_settings(NHIT_CACHE_ENABLED=False)
 class DistressPredictFilterContractTests(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -96,8 +95,6 @@ class DistressPredictFilterContractTests(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.token = create_access_token('predict.tester')
-        self.auth = {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
         self.row = _make_row()
         self.payload = {
             'project_name': ['Abu Road to Swaroopganj'],
@@ -105,12 +102,11 @@ class DistressPredictFilterContractTests(TestCase):
             'distress_type': ['All'],
         }
 
-    def test_requires_jwt(self):
+    def test_allows_unauthenticated(self):
         response = self.client.post(ENDPOINT, self.payload, format='json')
-        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
-
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
     def test_nested_list_shape_and_fields(self):
-        response = self.client.post(ENDPOINT, self.payload, format='json', **self.auth)
+        response = self.client.post(ENDPOINT, self.payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         body = response.json()
         self.assertIsInstance(body, list)
@@ -142,7 +138,6 @@ class DistressPredictFilterContractTests(TestCase):
             ENDPOINT,
             {**self.payload, 'project_name': ['Does Not Exist']},
             format='json',
-            **self.auth,
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json(), {'message': 'No match'})
@@ -157,7 +152,6 @@ class DistressPredictFilterContractTests(TestCase):
                 'distress_type': ['all'],
             },
             format='json',
-            **self.auth,
         )
         self.assertEqual(ok.status_code, status.HTTP_200_OK)
         self.assertEqual(len(ok.json()[0]), 1)
@@ -166,7 +160,6 @@ class DistressPredictFilterContractTests(TestCase):
             ENDPOINT,
             {**self.payload, 'carriage_type': ['Rigid']},
             format='json',
-            **self.auth,
         )
         self.assertEqual(miss.json(), {'message': 'No match'})
 
@@ -177,7 +170,7 @@ class DistressPredictFilterContractTests(TestCase):
             quantity_resolved=1.0,
             updated_by='tester',
         )
-        response = self.client.post(ENDPOINT, self.payload, format='json', **self.auth)
+        response = self.client.post(ENDPOINT, self.payload, format='json')
         row = response.json()[0][0]
         self.assertEqual(row['predicted_quantity'], 3.0)
         self.assertEqual(row['resolved_quantity'], 1.0)
@@ -211,19 +204,16 @@ class DistressPredictFilterContractTests(TestCase):
             ENDPOINT,
             {**self.payload, 'page': 1, 'page_size': 1},
             format='json',
-            **self.auth,
         )
         page2 = self.client.post(
             ENDPOINT,
             {**self.payload, 'page': 2, 'page_size': 1},
             format='json',
-            **self.auth,
         )
         beyond = self.client.post(
             ENDPOINT,
             {**self.payload, 'page': 3, 'page_size': 1},
             format='json',
-            **self.auth,
         )
         self.assertEqual(page1['X-Distress-Has-More'], 'true')
         self.assertEqual(page1['X-Distress-Row-Count'], '2')
@@ -236,7 +226,7 @@ class DistressPredictFilterContractTests(TestCase):
 
     def test_deterministic_order_by_chainage_then_id(self):
         early = _make_row(chainage_start=100.0, chainage_end=101.0, total_distress=1, pothole=1)
-        response = self.client.post(ENDPOINT, self.payload, format='json', **self.auth)
+        response = self.client.post(ENDPOINT, self.payload, format='json')
         ids = [r['distress_id'] for r in response.json()[0]]
         self.assertEqual(ids[0], early.predicted_distress_id)
         self.assertIn(self.row.predicted_distress_id, ids)

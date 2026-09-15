@@ -102,8 +102,12 @@ def get_cached_distress_predict_filter_page(
     builder: Callable[[], Any],
     timeout: int = CACHE_TTL_FILTER,
     serve_mode: ServeMode = 'python',
+    version: int | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Get or build page response; Redis stores DPGZ1 + gzip JSON bytes."""
+    """Get or build page response; Redis stores DPGZ1 + gzip JSON bytes.
+
+    When *version* is provided, skip the namespace version Redis GET.
+    """
     meta: dict[str, Any] = {
         'cache_hit': False,
         'cache_enabled': is_cache_usable(),
@@ -120,10 +124,14 @@ def get_cached_distress_predict_filter_page(
         meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
         return _adapt_miss_value(value, serve_mode, meta, store=False, timeout=timeout)
 
-    t_ver0 = time.perf_counter()
-    version = get_namespace_version(CACHE_NS_DISTRESS_PREDICT_FILTER)
-    meta['version_get_ms'] = round((time.perf_counter() - t_ver0) * 1000, 2)
-    meta['redis_round_trips'] = 1
+    if version is None:
+        t_ver0 = time.perf_counter()
+        version = get_namespace_version(CACHE_NS_DISTRESS_PREDICT_FILTER)
+        meta['version_get_ms'] = round((time.perf_counter() - t_ver0) * 1000, 2)
+        meta['redis_round_trips'] = 1
+    else:
+        meta['version_get_ms'] = 0
+        meta['version_reused'] = True
     cache_key = build_cache_key(
         namespace=CACHE_NS_DISTRESS_PREDICT_FILTER,
         version=version,

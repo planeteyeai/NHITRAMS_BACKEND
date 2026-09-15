@@ -51,9 +51,10 @@ from nhit.caching.accept_encoding import accepts_gzip_encoding
 from nhit.caching.constants import CACHE_TTL_FILTER
 from nhit.caching.distress_predict_filter_count import (
     distress_predict_filter_filter_hash,
-    get_cached_distress_predict_filter_count,
 )
-from nhit.caching.distress_predict_filter_page import get_cached_distress_predict_filter_page
+from nhit.caching.distress_predict_filter_bundle import (
+    get_cached_distress_predict_filter_count_and_page,
+)
 from django.http import HttpResponse
 from django.utils.cache import patch_vary_headers
 from rest_framework.renderers import JSONRenderer
@@ -432,11 +433,12 @@ class DistressFullResponseView(APIView):
 
 
 class DistressPredictFilterView(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsJWTAuthenticated]
+    # Temporarily open — no JWT / no auth gate (re-enable later if needed).
+    authentication_classes = []
+    permission_classes = []
 
     @swagger_auto_schema(
-        operation_description="Filter distress predictions with exact FastAPI logic",
+        operation_description="Filter distress predictions (no auth required for now)",
         request_body=DistressFilterSerializer,
         responses={200: openapi.Response('Success'), 400: 'Bad Request'}
     )
@@ -457,6 +459,7 @@ class DistressPredictFilterView(APIView):
         queryset = build_distress_predict_filter_queryset(data)
 
         count_ms = None
+        page_timings: dict = {}
 
         def count_builder():
             nonlocal count_ms
@@ -464,16 +467,6 @@ class DistressPredictFilterView(APIView):
             value = queryset.count()
             count_ms = round((time.perf_counter() - started) * 1000, 2)
             return value
-
-        total_count, count_meta = get_cached_distress_predict_filter_count(
-            payload=data,
-            builder=count_builder,
-        )
-
-        if offset >= total_count:
-            return Response({'message': 'No match'}, status=status.HTTP_200_OK)
-
-        page_timings: dict = {}
 
         def build_response():
             return build_distress_predict_filter_page(
@@ -486,12 +479,19 @@ class DistressPredictFilterView(APIView):
         accept_gzip = accepts_gzip_encoding(request.META.get('HTTP_ACCEPT_ENCODING'))
         serve_mode = 'gzip_bytes' if accept_gzip else 'json_bytes'
 
-        page_body, page_meta = get_cached_distress_predict_filter_page(
-            payload=data,
-            builder=build_response,
-            timeout=CACHE_TTL_FILTER,
-            serve_mode=serve_mode,
+        total_count, page_body, count_meta, page_meta = (
+            get_cached_distress_predict_filter_count_and_page(
+                payload=data,
+                count_builder=count_builder,
+                page_builder=build_response,
+                timeout=CACHE_TTL_FILTER,
+                serve_mode=serve_mode,
+                offset=offset,
+            )
         )
+
+        if offset >= total_count or page_body is None:
+            return Response({'message': 'No match'}, status=status.HTTP_200_OK)
 
         response_path = page_meta.get('response_path') or 'python_object'
         if response_path == 'direct_gzip_bytes':
@@ -571,8 +571,12 @@ class DistressPredictFilterView(APIView):
             if is_distress_predict_filter_perf_debug_enabled():
                 log_fields.update({
                     'count_version_get_ms': count_meta.get('version_get_ms'),
+                    'count_data_get_ms': count_meta.get('data_get_ms'),
                     'page_version_get_ms': page_meta.get('version_get_ms'),
                     'page_data_get_ms': page_meta.get('page_data_get_ms') or page_meta.get('redis_get_ms'),
+                    'mget_ms': page_meta.get('mget_ms') or count_meta.get('mget_ms'),
+                    'redis_round_trips': page_meta.get('redis_round_trips'),
+                    'lookup_path': page_meta.get('lookup_path'),
                     'redis_payload_bytes': page_meta.get('redis_payload_bytes'),
                 })
             log_distress_predict_filter_performance(log_fields)

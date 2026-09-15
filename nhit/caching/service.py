@@ -100,12 +100,35 @@ def safe_cache_get(
         return False, None
 
 
-def safe_cache_get_many(keys: list[str]) -> dict[str, Any]:
+def safe_cache_delete(key: str) -> bool:
+    """Best-effort delete of a single cache key (corrupt-entry recovery)."""
+    if not is_cache_usable():
+        return False
+    try:
+        cache.delete(key)
+        return True
+    except Exception:
+        logger.warning('cache delete failed key_suffix=%s', key[-12:], exc_info=True)
+        return False
+
+
+def safe_cache_get_many(
+    keys: list[str],
+    *,
+    timings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Fetch multiple keys; backends that support it use one Redis round trip."""
     if not is_cache_usable() or not keys:
         return {}
     try:
-        return cache.get_many(keys) or {}
+        start = time.perf_counter()
+        result = cache.get_many(keys) or {}
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if timings is not None:
+            timings['cache_get_many_ms'] = round(elapsed_ms, 2)
+            timings['cache_get_many_keys'] = len(keys)
+            timings['cache_get_many_hits'] = len(result)
+        return result
     except Exception:
         logger.warning('cache get_many failed count=%s', len(keys), exc_info=True)
         return {}
@@ -242,11 +265,15 @@ def get_or_set_cached_value(
     scope: str = '',
     use_lock: bool = False,
     timings: dict[str, Any] | None = None,
+    version: int | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Return cached value or build, cache, and return a fresh value.
 
     When *timings* is provided, cache GET/SET durations are accumulated into it.
     Default callers pass nothing — overhead is a single None check per operation.
+
+    When *version* is provided, skip the namespace version Redis GET (caller already
+    resolved it for this request).
     """
     meta: dict[str, Any] = {
         'cache_hit': False,
@@ -261,10 +288,14 @@ def get_or_set_cached_value(
         meta['build_ms'] = round((time.perf_counter() - start) * 1000, 2)
         return value, meta
 
-    t_ver0 = time.perf_counter()
-    version = get_namespace_version(namespace)
-    meta['version_get_ms'] = round((time.perf_counter() - t_ver0) * 1000, 2)
-    meta['redis_round_trips'] = 1
+    if version is None:
+        t_ver0 = time.perf_counter()
+        version = get_namespace_version(namespace)
+        meta['version_get_ms'] = round((time.perf_counter() - t_ver0) * 1000, 2)
+        meta['redis_round_trips'] = 1
+    else:
+        meta['version_get_ms'] = 0
+        meta['version_reused'] = True
     cache_key = build_cache_key(namespace=namespace, version=version, payload=payload, scope=scope)
     digest = cache_key.rsplit(':', 1)[-1]
     meta['cache_key_suffix'] = digest[:12]

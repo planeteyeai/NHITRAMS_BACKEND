@@ -28,7 +28,6 @@ from inventory.permissions import IsJWTAuthenticated as InventoryIsJWT
 
 
 AUTH_ENDPOINTS = [
-    ('POST', '/distress_predict_filter/', {'project_name': ['Agra Bypass Road']}),
     ('POST', '/distress_report_filter/', {'project_name': ['Agra Bypass Road']}),
     ('POST', '/api/distress/report/filter/', {'project_name': ['Agra Bypass Road']}),
     ('POST', '/api/distress/report/summary/', {'project_name': ['Agra Bypass Road']}),
@@ -69,7 +68,6 @@ class DistressSharedAuthParityTests(TestCase):
 
     def test_protected_views_use_shared_auth_and_permission(self):
         for view_cls in (
-            DistressPredictFilterView,
             DistressFullResponseView,
             DistressReportFilterView,
             DistressReportSummaryView,
@@ -78,6 +76,27 @@ class DistressSharedAuthParityTests(TestCase):
         ):
             self.assertEqual(view_cls.authentication_classes, [JWTAuthentication])
             self.assertEqual(view_cls.permission_classes, [IsJWTAuthenticated])
+
+    def test_distress_predict_filter_has_no_auth(self):
+        self.assertEqual(DistressPredictFilterView.authentication_classes, [])
+        self.assertEqual(DistressPredictFilterView.permission_classes, [])
+
+    def test_distress_predict_filter_allows_unauthenticated(self):
+        from unittest.mock import patch
+
+        with (
+            patch('distress.views.build_distress_predict_filter_queryset') as mock_qs,
+            patch('distress.views.build_distress_predict_filter_page') as mock_page,
+        ):
+            mock_qs.return_value.count.return_value = 0
+            mock_page.return_value = [[]]
+            response = self.client.post(
+                '/distress_predict_filter/',
+                {'project_name': ['Agra Bypass Road']},
+                format='json',
+            )
+        self.assertNotEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertNotEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_endpoints_require_authorization_header(self):
         for method, url, body in AUTH_ENDPOINTS:
