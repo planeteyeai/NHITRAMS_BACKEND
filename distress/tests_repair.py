@@ -1,4 +1,4 @@
-"""Tests for PATCH /api/distress/repair (distress_id-based repair status)."""
+"""Tests for PATCH /api/distress/repair (predicted_distress_id-based repair status)."""
 
 from __future__ import annotations
 
@@ -10,25 +10,17 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from authentication.jwt_utils import create_access_token
-from distress.models import (
-    Distress,
-    DistressRepairLog,
-    DistressType,
-    Project,
-    RoadSegment,
-)
+from distress.models import DistressRepairLog, PredictedDistress
 
 ENDPOINT = '/api/distress/repair'
 
 
 def _create_unmanaged_tables():
-    """Create unmanaged prediction tables for test DB if needed."""
-    with connection.schema_editor() as schema_editor:
-        for model in (Project, DistressType, RoadSegment, Distress):
-            try:
-                schema_editor.create_model(model)
-            except Exception:
-                pass
+    try:
+        with connection.schema_editor() as schema_editor:
+            schema_editor.create_model(PredictedDistress)
+    except Exception:
+        pass
 
 
 @override_settings(JWT_SECRET_KEY='test-jwt-secret')
@@ -43,31 +35,22 @@ class DistressRepairAPITests(TestCase):
         self.token = create_access_token('field.engineer')
         self.auth = {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
 
-        self.project = Project.objects.create(project_name='Abu Road to Swaroopganj')
-        self.dtype = DistressType.objects.create(distress_type_name='Pothole')
-        self.segment = RoadSegment.objects.create(
-            project=self.project,
-            chainage_start=650.0,
-            chainage_end=650.5,
-            direction='LHS',
-            carriage_type='Flexible',
-            lane='L1',
-        )
-        self.prediction = Distress.objects.create(
-            segment=self.segment,
-            project=self.project,
-            distress_type=self.dtype,
-            distress_date=date(2026, 8, 1),
+        self.prediction = PredictedDistress.objects.create(
             latitude=24.50012,
             longitude=72.80125,
-            count_val=3,
-            length_val=0,
-            area_val=0,
-            width_val=0,
-            depth_val=0,
+            project_name='Abu Road to Swaroopganj',
+            chainage_start=650.0,
+            chainage_end=650.5,
+            total_distress=3,
+            distress_type='Pothole',
+            pothole=3,
+            direction='LHS',
+            lane='L1',
+            distress_date=date(2026, 8, 1),
+            carriage_type='Flexible',
         )
         self.payload = {
-            'distress_id': self.prediction.distress_id,
+            'distress_id': self.prediction.predicted_distress_id,
             'status': 'REPAIRED',
         }
 
@@ -76,7 +59,7 @@ class DistressRepairAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertTrue(response.data['success'])
         data = response.data['data']
-        self.assertEqual(data['distress_id'], self.prediction.distress_id)
+        self.assertEqual(data['distress_id'], self.prediction.predicted_distress_id)
         self.assertEqual(data['predicted_quantity'], 3.0)
         self.assertEqual(data['resolved_quantity'], 1.0)
         self.assertEqual(data['remaining_quantity'], 2.0)
@@ -84,10 +67,10 @@ class DistressRepairAPITests(TestCase):
 
         log = DistressRepairLog.objects.get()
         self.assertEqual(log.updated_by, 'field.engineer')
-        self.assertEqual(log.distress_id, self.prediction.distress_id)
+        self.assertEqual(log.distress_id, self.prediction.predicted_distress_id)
         self.assertEqual(log.quantity_resolved, 1.0)
         self.prediction.refresh_from_db()
-        self.assertEqual(self.prediction.count_val, 3)
+        self.assertEqual(self.prediction.total_distress, 3)
 
     def test_not_present(self):
         payload = {**self.payload, 'status': 'NOT_PRESENT'}
@@ -129,7 +112,7 @@ class DistressRepairAPITests(TestCase):
         self.assertFalse(conflict.data['success'])
         self.assertIn('already been resolved', conflict.data['message'])
         self.assertEqual(DistressRepairLog.objects.count(), 1)
-        self.assertEqual(Distress.objects.get().count_val, 3)
+        self.assertEqual(PredictedDistress.objects.get().total_distress, 3)
 
     def test_quantity_overshoot_returns_400(self):
         response = self.client.patch(
@@ -170,18 +153,26 @@ class DistressRepairAPITests(TestCase):
         log = DistressRepairLog.objects.get()
         self.assertEqual(log.updated_by, 'field.engineer')
         self.assertIsNotNone(log.updated_at)
-        self.assertEqual(log.distress_id, self.prediction.distress_id)
+        self.assertEqual(log.distress_id, self.prediction.predicted_distress_id)
 
     def test_prediction_table_not_modified(self):
         before = list(
-            Distress.objects.values(
-                'distress_id', 'count_val', 'latitude', 'longitude', 'distress_date'
+            PredictedDistress.objects.values(
+                'predicted_distress_id',
+                'total_distress',
+                'latitude',
+                'longitude',
+                'distress_date',
             )
         )
         self.client.patch(ENDPOINT, self.payload, format='json', **self.auth)
         after = list(
-            Distress.objects.values(
-                'distress_id', 'count_val', 'latitude', 'longitude', 'distress_date'
+            PredictedDistress.objects.values(
+                'predicted_distress_id',
+                'total_distress',
+                'latitude',
+                'longitude',
+                'distress_date',
             )
         )
         self.assertEqual(before, after)
@@ -196,9 +187,9 @@ class DistressRepairAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertFalse(response.data['success'])
 
-    def test_nan_count_val_returns_400(self):
-        self.prediction.count_val = float('nan')
-        self.prediction.save(update_fields=['count_val'])
+    def test_null_total_distress_returns_400(self):
+        self.prediction.total_distress = None
+        self.prediction.save(update_fields=['total_distress'])
         response = self.client.patch(ENDPOINT, self.payload, format='json', **self.auth)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('distress_id', response.data)

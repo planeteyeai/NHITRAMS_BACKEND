@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import gzip
-import json
 from datetime import date
-from unittest.mock import patch
 
-from django.core.cache import cache
 from django.db import connection
 from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from authentication.jwt_utils import create_access_token
-from distress.models import Distress, DistressRepairLog, DistressType, Project, RoadSegment
+from distress.models import DistressRepairLog, PredictedDistress
 from distress.serializers import DistressFilterSerializer
 from distress.services.distress_predict_filter_response import (
     DEFAULT_DISTRESS_PREDICT_FILTER_PAGE_SIZE,
@@ -54,14 +50,41 @@ REQUIRED_ROW_KEYS = {
 
 
 def _create_unmanaged_tables():
-    """Create unmanaged prediction tables for test DB if needed."""
-    for model in (Project, DistressType, RoadSegment, Distress):
-        try:
-            with connection.schema_editor() as schema_editor:
-                schema_editor.create_model(model)
-        except Exception:
-            # Table may already exist (keepdb). Ignore; do not rollback inside TestCase atomic.
-            pass
+    """Create unmanaged predicted_distress table for test DB if needed."""
+    try:
+        with connection.schema_editor() as schema_editor:
+            schema_editor.create_model(PredictedDistress)
+    except Exception:
+        pass
+
+
+def _make_row(**overrides):
+    defaults = {
+        'latitude': 24.50012,
+        'longitude': 72.80125,
+        'project_name': 'Abu Road to Swaroopganj',
+        'chainage_start': 650.0,
+        'chainage_end': 650.5,
+        'total_distress': 3,
+        'distress_type': 'Pothole',
+        'pothole': 3,
+        'alligator_crack': 0,
+        'block_crack_oblique_crack': 0,
+        'edge_break': 0,
+        'patchwork': 0,
+        'bleeding': 0,
+        'hotspots': 0,
+        'rutting': 0,
+        'raveling': 0,
+        'transverse_crack': 0,
+        'rough_spot': 0,
+        'direction': 'LHS',
+        'lane': 'L1',
+        'distress_date': date(2026, 8, 1),
+        'carriage_type': 'Flexible',
+    }
+    defaults.update(overrides)
+    return PredictedDistress.objects.create(**defaults)
 
 
 @override_settings(JWT_SECRET_KEY='test-jwt-secret', NHIT_CACHE_ENABLED=False)
@@ -75,30 +98,7 @@ class DistressPredictFilterContractTests(TestCase):
         self.client = APIClient()
         self.token = create_access_token('predict.tester')
         self.auth = {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
-
-        self.project = Project.objects.create(project_name='Abu Road to Swaroopganj')
-        self.dtype = DistressType.objects.create(distress_type_name='Pothole')
-        self.segment = RoadSegment.objects.create(
-            project=self.project,
-            chainage_start=650.0,
-            chainage_end=650.5,
-            direction='LHS',
-            carriage_type='Flexible',
-            lane='L1',
-        )
-        self.row = Distress.objects.create(
-            segment=self.segment,
-            project=self.project,
-            distress_type=self.dtype,
-            distress_date=date(2026, 8, 1),
-            latitude=24.50012,
-            longitude=72.80125,
-            count_val=3,
-            length_val=0,
-            area_val=0,
-            width_val=0,
-            depth_val=0,
-        )
+        self.row = _make_row()
         self.payload = {
             'project_name': ['Abu Road to Swaroopganj'],
             'direction': ['All'],
@@ -119,7 +119,7 @@ class DistressPredictFilterContractTests(TestCase):
         self.assertEqual(len(body[0]), 1)
         row = body[0][0]
         self.assertTrue(REQUIRED_ROW_KEYS.issubset(row.keys()))
-        self.assertEqual(row['distress_id'], self.row.distress_id)
+        self.assertEqual(row['distress_id'], self.row.predicted_distress_id)
         self.assertEqual(row['direction'], 'lhs')
         self.assertEqual(row['distress_type'], 'Pothole')
         self.assertEqual(row['predicted_quantity'], 3.0)
@@ -172,7 +172,7 @@ class DistressPredictFilterContractTests(TestCase):
 
     def test_repair_fields_reflect_resolved_quantity(self):
         DistressRepairLog.objects.create(
-            distress_id=self.row.distress_id,
+            distress_id=self.row.predicted_distress_id,
             status=DistressRepairLog.STATUS_REPAIRED,
             quantity_resolved=1.0,
             updated_by='tester',
@@ -206,19 +206,7 @@ class DistressPredictFilterContractTests(TestCase):
         self.assertFalse(neg.is_valid())
 
     def test_page_two_and_beyond_last_page(self):
-        other = Distress.objects.create(
-            segment=self.segment,
-            project=self.project,
-            distress_type=self.dtype,
-            distress_date=date(2026, 8, 2),
-            latitude=24.5,
-            longitude=72.8,
-            count_val=1,
-            length_val=0,
-            area_val=0,
-            width_val=0,
-            depth_val=0,
-        )
+        other = _make_row(distress_date=date(2026, 8, 2), total_distress=1, pothole=1)
         page1 = self.client.post(
             ENDPOINT,
             {**self.payload, 'page': 1, 'page_size': 1},
@@ -243,32 +231,12 @@ class DistressPredictFilterContractTests(TestCase):
         self.assertEqual(page2['X-Distress-Has-More'], 'false')
         self.assertEqual(len(page2.json()[0]), 1)
         ids = {page1.json()[0][0]['distress_id'], page2.json()[0][0]['distress_id']}
-        self.assertEqual(ids, {self.row.distress_id, other.distress_id})
+        self.assertEqual(ids, {self.row.predicted_distress_id, other.predicted_distress_id})
         self.assertEqual(beyond.json(), {'message': 'No match'})
 
     def test_deterministic_order_by_chainage_then_id(self):
-        seg_early = RoadSegment.objects.create(
-            project=self.project,
-            chainage_start=100.0,
-            chainage_end=101.0,
-            direction='LHS',
-            carriage_type='Flexible',
-            lane='L1',
-        )
-        early = Distress.objects.create(
-            segment=seg_early,
-            project=self.project,
-            distress_type=self.dtype,
-            distress_date=date(2026, 8, 1),
-            latitude=24.1,
-            longitude=72.1,
-            count_val=1,
-            length_val=0,
-            area_val=0,
-            width_val=0,
-            depth_val=0,
-        )
+        early = _make_row(chainage_start=100.0, chainage_end=101.0, total_distress=1, pothole=1)
         response = self.client.post(ENDPOINT, self.payload, format='json', **self.auth)
         ids = [r['distress_id'] for r in response.json()[0]]
-        self.assertEqual(ids[0], early.distress_id)
-        self.assertIn(self.row.distress_id, ids)
+        self.assertEqual(ids[0], early.predicted_distress_id)
+        self.assertIn(self.row.predicted_distress_id, ids)

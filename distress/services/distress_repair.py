@@ -10,7 +10,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.exceptions import APIException, NotFound, ValidationError
 
-from distress.models import Distress, DistressRepairLog
+from distress.models import DistressRepairLog, PredictedDistress
 from nhit.caching.invalidation import invalidate_distress_predict_filter_cache
 
 RESOLVED_STATUSES = (
@@ -162,12 +162,12 @@ def record_distress_repair(
         raise ValidationError({'quantity_resolved': ['Must be a number >= 0.']})
 
     try:
-        prediction = Distress.objects.get(distress_id=distress_id)
-    except Distress.DoesNotExist as exc:
+        prediction = PredictedDistress.objects.get(predicted_distress_id=distress_id)
+    except PredictedDistress.DoesNotExist as exc:
         raise NotFound('No predicted distress found for this distress_id.') from exc
 
-    predicted_quantity = _finite_predicted_quantity(prediction.count_val)
-    resolved_so_far = _resolved_quantity(prediction.distress_id)
+    predicted_quantity = _finite_predicted_quantity(prediction.total_distress)
+    resolved_so_far = _resolved_quantity(prediction.predicted_distress_id)
     remaining_before = max(predicted_quantity - resolved_so_far, 0.0)
 
     if remaining_before <= 0:
@@ -180,13 +180,13 @@ def record_distress_repair(
             {
                 'quantity_resolved': [
                     f'Cannot resolve {quantity}; only {remaining_before} remaining '
-                    f'for distress_id={prediction.distress_id}.'
+                    f'for distress_id={prediction.predicted_distress_id}.'
                 ]
             }
         )
 
     DistressRepairLog.objects.create(
-        distress_id=prediction.distress_id,
+        distress_id=prediction.predicted_distress_id,
         status=status_value,
         quantity_resolved=quantity,
         updated_by=updated_by,
@@ -200,7 +200,7 @@ def record_distress_repair(
     remaining_after = max(predicted_quantity - resolved_after, 0.0)
 
     return {
-        'distress_id': prediction.distress_id,
+        'distress_id': prediction.predicted_distress_id,
         'status': status_value,
         'predicted_quantity': predicted_quantity,
         'resolved_quantity': resolved_after,

@@ -35,3 +35,14 @@ def apply_carriage_type_filter(queryset, data):
     for value in values:
         q_objects |= Q(segment__carriage_type__iexact=value)
     return queryset.filter(q_objects)
+
+
+def apply_predicted_carriage_type_filter(queryset, data):
+    """Filter denormalized predicted_distress.carriage_type (not All)."""
+    values = data.get('carriage_type') or []
+    if not values or any(str(v).lower() == 'all' for v in values):
+        return queryset
+    q_objects = Q()
+    for value in values:
+        q_objects |= Q(carriage_type__iexact=value)
+    return queryset.filter(q_objects)

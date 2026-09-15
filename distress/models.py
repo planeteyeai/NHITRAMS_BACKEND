@@ -73,6 +73,48 @@ class Distress(models.Model):
         return f"Distress {self.distress_id} - {self.distress_type.distress_type_name}"
 
 
+class PredictedDistress(models.Model):
+    """Denormalized AI prediction rows used by POST /distress_predict_filter/.
+
+    Source of truth table on Neon: ``predicted_distress`` (~1.18M rows).
+    Response still exposes ``distress_id`` (= ``predicted_distress_id``) for FE/repair.
+    """
+
+    predicted_distress_id = models.BigAutoField(primary_key=True)
+    latitude = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    project_name = models.CharField(max_length=255, null=True, blank=True)
+    chainage_start = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    chainage_end = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    total_distress = models.IntegerField(null=True, blank=True)
+    distress_type = models.CharField(max_length=255, null=True, blank=True)
+    pothole = models.IntegerField(null=True, blank=True)
+    alligator_crack = models.IntegerField(null=True, blank=True)
+    block_crack_oblique_crack = models.IntegerField(null=True, blank=True)
+    edge_break = models.IntegerField(null=True, blank=True)
+    patchwork = models.IntegerField(null=True, blank=True)
+    bleeding = models.IntegerField(null=True, blank=True)
+    hotspots = models.IntegerField(null=True, blank=True)
+    rutting = models.IntegerField(null=True, blank=True)
+    raveling = models.IntegerField(null=True, blank=True)
+    transverse_crack = models.IntegerField(null=True, blank=True)
+    rough_spot = models.IntegerField(null=True, blank=True)
+    direction = models.CharField(max_length=100, null=True, blank=True)
+    lane = models.CharField(max_length=100, null=True, blank=True)
+    distress_date = models.DateField(null=True, blank=True)
+    carriage_type = models.CharField(max_length=100, null=True, blank=True)
+    hairline_crack = models.IntegerField(null=True, blank=True)
+    longitudinal_crack = models.IntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'predicted_distress'
+
+    def __str__(self):
+        return f'PredictedDistress {self.predicted_distress_id} - {self.distress_type}'
+
+
 class DistressReport(models.Model):
     """User-submitted distress report formerly stored in Excel.
 
