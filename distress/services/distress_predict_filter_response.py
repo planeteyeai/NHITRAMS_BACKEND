@@ -46,7 +46,33 @@ DISTRESS_TYPE_FIELD_MAPPING = {
     'transverse crack': 'transverse_crack',
     'roughness': 'rough_spot',
     'rough spot': 'rough_spot',
+    'hairline crack': 'hairline_crack',
+    'longitudinal crack': 'longitudinal_crack',
 }
+
+# Canonical display values for direction / N/A lane (Title Case words).
+_DIRECTION_CANONICAL = {
+    'increasing': 'Increasing',
+    'decreasing': 'Decreasing',
+    'not applicable': 'Not Applicable',
+    'not_applicable': 'Not Applicable',
+}
+
+RESPONSE_SPARSE_FIELDS = (
+    'pothole',
+    'alligator_crack',
+    'block_crack/oblique_crack',
+    'edge_break',
+    'patchwork',
+    'bleeding',
+    'hotspots',
+    'rutting',
+    'raveling',
+    'transverse_crack',
+    'rough_spot',
+    'hairline_crack',
+    'longitudinal_crack',
+)
 
 # Columns required to build the HTTP response (MISS projection).
 PREDICTED_DISTRESS_RESPONSE_VALUES = (
@@ -69,6 +95,35 @@ def _normalize_type_name(raw: str | None) -> str:
     return str(raw or '').lower().replace('_', ' ').strip()
 
 
+def _canonical_display_label(raw: str | None) -> str:
+    """Title-Case words for distress_type / free-form labels (stable API casing)."""
+    text = _normalize_type_name(raw)
+    if not text:
+        return ''
+    return ' '.join(part.capitalize() for part in text.split())
+
+
+def _canonical_direction(raw: str | None) -> str:
+    """Normalize direction to Increasing / Decreasing / Not Applicable / Title Case."""
+    text = _normalize_type_name(raw)
+    if not text:
+        return ''
+    if text in _DIRECTION_CANONICAL:
+        return _DIRECTION_CANONICAL[text]
+    return _canonical_display_label(text)
+
+
+def _canonical_lane(raw: str | None) -> str:
+    """Keep lane codes (L1/L2); normalize N/A to Not Applicable."""
+    text = str(raw or '').strip()
+    if not text:
+        return ''
+    key = text.lower().replace('_', ' ')
+    if key in ('not applicable', 'n/a', 'na'):
+        return 'Not Applicable'
+    return text
+
+
 def _row_get(row: Any, name: str):
     if isinstance(row, dict):
         return row.get(name)
@@ -81,7 +136,6 @@ def serialize_distress_predict_row(row, resolved_qty: float) -> dict[str, Any]:
     distress_type_name = _normalize_type_name(distress_type_raw)
     breakdown = quantity_breakdown(_row_get(row, 'total_distress'), resolved_qty)
     display_qty = breakdown['remaining_quantity']
-    direction = str(_row_get(row, 'direction') or '').lower()
     distress_date = _row_get(row, 'distress_date')
     item = {
         'distress_id': _row_get(row, 'predicted_distress_id'),
@@ -94,28 +148,16 @@ def serialize_distress_predict_row(row, resolved_qty: float) -> dict[str, Any]:
         'predicted_quantity': breakdown['predicted_quantity'],
         'resolved_quantity': breakdown['resolved_quantity'],
         'remaining_quantity': breakdown['remaining_quantity'],
-        'distress_type': str(distress_type_raw or '').title(),
-        'direction': direction,
-        'lane': _row_get(row, 'lane') or '',
+        'distress_type': _canonical_display_label(distress_type_raw),
+        'direction': _canonical_direction(_row_get(row, 'direction')),
+        'lane': _canonical_lane(_row_get(row, 'lane')),
         'date': distress_date.strftime('%Y-%m-%d') if distress_date else None,
         'carriage_type': _row_get(row, 'carriage_type') or '',
     }
     active_field = DISTRESS_TYPE_FIELD_MAPPING.get(distress_type_name)
-    response_sparse_fields = (
-        'pothole',
-        'alligator_crack',
-        'block_crack/oblique_crack',
-        'edge_break',
-        'patchwork',
-        'bleeding',
-        'hotspots',
-        'rutting',
-        'raveling',
-        'transverse_crack',
-        'rough_spot',
-    )
-    for field in response_sparse_fields:
-        item[field] = display_qty if field == active_field else 0
+    for field in RESPONSE_SPARSE_FIELDS:
+        # Always emit floats so sparse zeros match active-quantity JSON type.
+        item[field] = float(display_qty) if field == active_field else 0.0
     return item
 
 

@@ -45,6 +45,8 @@ REQUIRED_ROW_KEYS = {
     'raveling',
     'transverse_crack',
     'rough_spot',
+    'hairline_crack',
+    'longitudinal_crack',
 }
 
 
@@ -116,14 +118,16 @@ class DistressPredictFilterContractTests(TestCase):
         row = body[0][0]
         self.assertTrue(REQUIRED_ROW_KEYS.issubset(row.keys()))
         self.assertEqual(row['distress_id'], self.row.predicted_distress_id)
-        self.assertEqual(row['direction'], 'lhs')
+        self.assertEqual(row['direction'], 'Lhs')
         self.assertEqual(row['distress_type'], 'Pothole')
         self.assertEqual(row['predicted_quantity'], 3.0)
         self.assertEqual(row['resolved_quantity'], 0.0)
         self.assertEqual(row['remaining_quantity'], 3.0)
         self.assertEqual(row['total_distress'], 3.0)
         self.assertEqual(row['pothole'], 3.0)
-        self.assertEqual(row['alligator_crack'], 0)
+        self.assertEqual(row['alligator_crack'], 0.0)
+        self.assertEqual(row['hairline_crack'], 0.0)
+        self.assertEqual(row['longitudinal_crack'], 0.0)
         self.assertEqual(response['X-Distress-Paginated'], 'true')
         self.assertEqual(response['X-Distress-Page'], '1')
         self.assertEqual(
@@ -177,8 +181,37 @@ class DistressPredictFilterContractTests(TestCase):
         self.assertEqual(row['remaining_quantity'], 2.0)
         self.assertEqual(row['total_distress'], 2.0)
         self.assertEqual(row['pothole'], 2.0)
+        self.assertEqual(row['alligator_crack'], 0.0)
+        self.assertEqual(row['hairline_crack'], 0.0)
+        self.assertEqual(row['longitudinal_crack'], 0.0)
 
-    def test_default_page_size_and_reject_over_max(self):
+    def test_direction_and_distress_type_canonical_case(self):
+        PredictedDistress.objects.filter(
+            predicted_distress_id=self.row.predicted_distress_id,
+        ).update(direction='increasing', distress_type='longitudinal crack', pothole=0)
+        # Rebuild unmanaged row fields for serializer path via values().
+        self.row.direction = 'increasing'
+        self.row.distress_type = 'longitudinal crack'
+        self.row.pothole = 0
+        self.row.longitudinal_crack = 3
+        self.row.save()
+
+        response = self.client.post(ENDPOINT, self.payload, format='json')
+        row = response.json()[0][0]
+        self.assertEqual(row['direction'], 'Increasing')
+        self.assertEqual(row['distress_type'], 'Longitudinal Crack')
+        self.assertEqual(row['longitudinal_crack'], 3.0)
+        self.assertEqual(row['pothole'], 0.0)
+        self.assertEqual(row['hairline_crack'], 0.0)
+
+    def test_not_applicable_direction_and_lane_canonical(self):
+        self.row.direction = 'not applicable'
+        self.row.lane = 'Not applicable'
+        self.row.save()
+        response = self.client.post(ENDPOINT, self.payload, format='json')
+        row = response.json()[0][0]
+        self.assertEqual(row['direction'], 'Not Applicable')
+        self.assertEqual(row['lane'], 'Not Applicable')
         ser = DistressFilterSerializer(data={})
         self.assertTrue(ser.is_valid(), ser.errors)
         self.assertEqual(ser.validated_data['page'], 1)
